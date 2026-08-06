@@ -346,9 +346,13 @@ Restores the default configuration, both UWB and System.
 
 > Pisa la configuración **y las claves de calibración** con los valores por defecto y los escribe automáticamente en NVM (guía §2.2). Esta herramienta nunca lo ejecuta sin confirmación explícita.
 
-## 5. Notificaciones asincrónicas (durante sesiones FiRa)
+## 5. Notificaciones asincrónicas: acá se reporta la distancia
 
-Al arrancar una sesión se emiten notificaciones de estado (no documentadas en el manual):
+> **Punto clave:** ningún comando "consulta" la distancia. La distancia llega **sola, de forma asincrónica**, como notificaciones `SESSION_INFO_NTF` que ambas placas emiten cada `BLOCK` ms (200 por defecto) mientras corre una sesión TWR iniciada con `RESPF` (una placa) + `INITF` (la otra). Cesan con `STOP`.
+
+### 5.1 `SESSION_STATUS_NTF` — estado de la sesión (no documentada en el manual)
+
+Al arrancar una sesión:
 
 ```text
 SESSION_STATUS_NTF: {state="INIT", reason="State change with session management commands"}
@@ -356,21 +360,49 @@ SESSION_STATUS_NTF: {state="IDLE", reason="State change with session management 
 SESSION_STATUS_NTF: {state="ACTIVE", reason="State change with session management commands"}
 ```
 
-Cada ronda de ranging produce una `SESSION_INFO_NTF` **en dos líneas** (la segunda arranca con un `\r` residual). Con el par al alcance:
+### 5.2 `SESSION_INFO_NTF` — la medición de distancia
+
+Llega **en dos líneas** (la segunda arranca con un `\r` residual). Ejemplo real capturado en el banco a 2,20 m, con `DIAG 1` habilitado (por eso incluye RSSI):
 
 ```text
 SESSION_INFO_NTF: {session_handle=1, sequence_number=0, block_index=0, n_measurements=1
-\r [mac_address=0x0001, status="SUCCESS", distance[cm]=19]}
+\r [mac_address=0x0001, status="SUCCESS", distance[cm]=210, RSSI[dBm]=-78.0]}
 ```
 
-Sin el par al alcance (p. ej. `INITF` sin ningún `RESPF` activo):
+| Campo | Significado |
+|---|---|
+| `session_handle` | Identificador de la sesión UWB |
+| `sequence_number` / `block_index` | Contadores incrementales, uno por ronda de ranging |
+| `n_measurements` | Cantidad de mediciones en la notificación (una por par; >1 en modo uno-a-muchos) |
+| `mac_address` | Dirección del dispositivo par |
+| `status` | Resultado de la ronda: `SUCCESS` o un error (p. ej. `RX_TIMEOUT`) |
+| **`distance[cm]`** | **La distancia medida, entero en centímetros — solo presente con `status="SUCCESS"`** |
+| `RSSI[dBm]` | Potencia de la señal recibida — solo presente con `DIAG 1` previo |
+
+Cuando la ronda falla (par fuera de alcance, obstrucción, o `INITF` sin ningún `RESPF` activo), la notificación llega igual pero **sin distancia**:
 
 ```text
-SESSION_INFO_NTF: {session_handle=1, sequence_number=0, block_index=0, n_measurements=1
+SESSION_INFO_NTF: {session_handle=1, sequence_number=3, block_index=3, n_measurements=1
 \r [mac_address=0x0001, status="RX_TIMEOUT"]}
 ```
 
-El campo `distance[cm]` solo aparece con `status="SUCCESS"`; el RSSI requiere `DIAG 1` previo.
+> **Nota práctica:** una muestra individual tiene resolución de 1 cm y dispersión de varios cm por multipath (en el banco de 2,20 m se observaron desvíos de 2–10 cm según el entorno). Para medir con precisión hay que **promediar** — esta herramienta usa 100 muestras (`collect_samples()`).
+
+### 5.3 `RANGE_DIAGNOSTICS_NTF` — diagnóstico por trama (con `DIAG 1`, no documentada)
+
+Con `DIAG 1`, además del RSSI, cada `SESSION_INFO_NTF` va seguida de una notificación de diagnóstico que detalla **las 6 tramas del intercambio DS-TWR** (multilínea, continuaciones con `\r`):
+
+```text
+RANGE_DIAGNOSTICS_NTF: {n_reports=6
+\r [msg_id=CONTROL, action=TX, antenna_set=0, frame_status={SUCCESS: 1, WIFI_COEX: 0, GRANT_DURATION_EXCEEDED: 0}, cfo_present=0, nb_aoa=0];
+\r [msg_id=RANGING_INITIATION, action=TX, antenna_set=0, frame_status={SUCCESS: 1, ...}, cfo_present=0, nb_aoa=0];
+\r [msg_id=RANGING_RESPONSE, action=RX, antenna_set=0, frame_status={SUCCESS: 1, ...}, cfo_present=1, cfo_ppm=2.32, nb_aoa=0];
+\r [msg_id=RANGING_FINAL, action=TX, antenna_set=0, frame_status={SUCCESS: 1, ...}, cfo_present=0, nb_aoa=0];
+\r [msg_id=MEASUREMENT_REPORT, action=TX, antenna_set=0, frame_status={SUCCESS: 1, ...}, cfo_present=0, nb_aoa=0];
+\r [msg_id=RESULT_REPORT, action=RX, antenna_set=0, frame_status={SUCCESS: 1, ...}, cfo_present=1, cfo_ppm=2.17, nb_aoa=0]}
+```
+
+Útil para diagnóstico fino: se ve qué trama del intercambio falló (en una ronda `RX_TIMEOUT`, el reporte se corta en la trama con `SUCCESS: 0`) y el offset de frecuencia del cristal del par (`cfo_ppm`, ~2,2–2,6 ppm en las capturas). Esta herramienta ignora estas notificaciones al medir.
 
 ## 6. Tabla resumen
 
@@ -387,7 +419,7 @@ El campo `distance[cm]` solo aparece con `status="SUCCESS"`; el RSSI requiere `D
 | `CALKEY <key>` | NONE | **`KO`** | **Lectura rota** — usar LISTCAL |
 | `CALKEY <key> <val>` | NONE | `ok` | Escritura OK; entrada **decimal**; responde el valor nuevo |
 | `LISTCAL` | NONE | `ok` | 259 claves |
-| `DIAG` / `DIAG 0\|1` | NONE | `ok` | Habilita RSSI en ranging |
+| `DIAG` / `DIAG 0\|1` | NONE | `ok` | Habilita RSSI y `RANGE_DIAGNOSTICS_NTF` en ranging |
 | `LCFG` | NONE | `ok` | JSON; solo aplica a LISTENER |
 | `DECAID` | NONE | `ok` | IDs del chip UWB |
 | `SETAPP <app>` | NONE | `ok` | Requiere `SAVE` para persistir |
