@@ -161,6 +161,22 @@ Found non-AOA chip. PDoA is not available.
 Listener Top Application: Started
 ```
 
+Por **cada trama UWB recibida** emite un bloque JSON con el payload y los niveles de recepción (captura real, payload abreviado):
+
+```text
+JS010D{"LSTN":[49,2B,01,00,26,13,...,1D,09],"TS4ns":"0x0932C473","O":1299,"rsl":-80.96,"fsl":-91.94}
+```
+
+| Campo | Significado |
+|---|---|
+| `LSTN` | Payload de la trama en hex (máx. 127 bytes) |
+| `TS4ns` | Timestamp de recepción (unidades de 4 ns) |
+| `O` | Offset de frecuencia del cristal del transmisor |
+| `rsl` | *RX Signal Level*: potencia **total** recibida [dBm] |
+| `fsl` | *First path Signal Level*: potencia del **primer camino** [dBm] |
+
+La relación `rsl − fsl` es el indicador de multipath — ver §5.4.
+
 `LSTAT` (solo con LISTENER corriendo) reporta los contadores de eventos de RX:
 
 ```text
@@ -404,6 +420,31 @@ RANGE_DIAGNOSTICS_NTF: {n_reports=6
 
 Útil para diagnóstico fino: se ve qué trama del intercambio falló (en una ronda `RX_TIMEOUT`, el reporte se corta en la trama con `SUCCESS: 0`) y el offset de frecuencia del cristal del par (`cfo_ppm`, ~2,2–2,6 ppm en las capturas). Esta herramienta ignora estas notificaciones al medir.
 
+### 5.4 Rebotes de señal (multipath / NLOS): qué detecta la tecnología y qué expone el CLI
+
+> **[Fuera del manual]** Fundamento: el receptor UWB estima la distancia a partir del tiempo de vuelo del **primer camino detectable** en la respuesta al impulso del canal (CIR). Por eso el ranging es robusto a los rebotes *mientras exista línea de vista*: los ecos llegan después y no corren la medición. El problema es el caso **NLOS** (camino directo bloqueado): el "primer camino" que detecta el chip es un rebote, y la distancia se **sobreestima siempre** (el camino reflejado es más largo). Un rebote nunca acorta la medición.
+
+**Qué expone el firmware CLI 1.1.0:**
+
+| Modo | Indicador disponible |
+|---|---|
+| Sesión TWR (`INITF`/`RESPF`) | **No hay indicador directo de NLOS** en `SESSION_INFO_NTF`. Heurísticas: saltos de distancia hacia arriba, caída del `RSSI` (con `DIAG 1`), aumento de la dispersión entre muestras y rondas `RX_TIMEOUT` intercaladas. |
+| `LISTENER` (sniffer) | **Sí**: cada trama reporta `rsl` (potencia total) y `fsl` (potencia del primer camino). |
+
+**Interpretación de `rsl − fsl`** **[Fuera del manual** — criterio de las notas de aplicación de Qorvo/Decawave (APS006, *DW3000 User Manual*)**]**: si el primer camino concentra la energía (diferencia chica, < ~6 dB), la señal es probablemente directa (LOS); si el primer camino llega debilitado respecto del total (diferencia grande, > ~10 dB), la energía dominante viene de rebotes y la medición es sospechosa de NLOS.
+
+Ejemplo real (banco interior a 2,20 m, tramas consecutivas del mismo transmisor):
+
+```text
+"rsl":-80.42,"fsl":-82.98   → diferencia  2,6 dB  → primer camino fuerte (LOS)
+"rsl":-80.96,"fsl":-91.94   → diferencia 11,0 dB  → primer camino débil
+"rsl":-81.56,"fsl":-96.08   → diferencia 14,5 dB  → energía dominada por rebotes
+```
+
+La variación entre tramas consecutivas es normal en interiores (personas, muebles y paredes modifican el canal en tiempo real). Para juzgar un enlace conviene mirar la **tendencia** de muchas tramas, no una individual.
+
+> **Nota:** existen claves de calibración relacionadas con el diagnóstico del CIR (`rx_diag_config.cir_n_taps`, `rx_diag_config.cir_fp_tap_offset` — ver §3.3), pero el CLI no expone el volcado del CIR; para análisis fino de multipath el camino es la interfaz **UCI** con `uwb-qorvo-tools`. Para el detalle del cálculo de `rsl`/`fsl`, el manual remite a las *Diagnostic APIs* del **DW3000 User Manual** (guía, Anexo C).
+
 ## 6. Tabla resumen
 
 | Comando | Modo requerido | Termina en | Notas fw 1.1.0 |
@@ -412,7 +453,7 @@ RANGE_DIAGNOSTICS_NTF: {n_reports=6
 | `STAT` | cualquiera | `ok` | Sin línea `MODE:`; JSON multilínea |
 | `STOP` | cualquiera | `ok` | Tarda ~0,3 s en hacer efecto |
 | `THREAD` | cualquiera | `ok` | Tabla de stacks y heap |
-| `LISTENER` | NONE | `ok` | Chip no-AoA: sin PDoA |
+| `LISTENER` | NONE | `ok` | Chip no-AoA: sin PDoA; reporta `rsl`/`fsl` por trama (indicador de multipath, §5.4) |
 | `LSTAT` | LISTENER activo | `ok` | JSON de eventos RX |
 | `INITF` / `RESPF` | NONE | `ok` | Vuelca los parámetros FiRa; luego notificaciones |
 | `UART` | NONE | `ok` | Solo consulta desde esta herramienta |
