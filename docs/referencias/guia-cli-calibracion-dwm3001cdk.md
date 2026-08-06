@@ -292,6 +292,8 @@ SESSION_INFO_NTF: {session_handle=1, sequence_number=0, block_index=0, n_measure
 | `rmt_az` / `rmt_el` | AoA remoto, azimut / elevación [-90…+90] |
 | `RSSI` | Solo se muestra con `DIAG` habilitado |
 
+> **[Nota 2026-08-06 — verificado con hardware real]** En fw 1.1.0 cada `SESSION_INFO_NTF` llega **partida en dos líneas**: la primera corta tras `n_measurements=N` y la segunda (que arranca con un `\r` residual) contiene el bloque `[mac_address=…, status=…, distance[cm]=…]}`. El manual la muestra en una sola línea. Además, al arrancar una sesión se emiten notificaciones `SESSION_STATUS_NTF` con los estados `INIT` → `IDLE` → `ACTIVE`, no documentadas en la tabla del manual.
+
 > **Consecuencia práctica para calibrar:** la distancia se reporta **como entero en centímetros**. La resolución de una muestra individual es de 1 cm, así que para resolver por debajo de ese valor hay que promediar muchas muestras. Y para ver el RSSI —útil para juzgar la calidad del enlace— hay que ejecutar `DIAG 1` **antes** de arrancar el ranging.
 
 ---
