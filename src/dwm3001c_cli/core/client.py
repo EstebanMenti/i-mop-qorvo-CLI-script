@@ -39,6 +39,10 @@ from dwm3001c_cli.transport.serial_link import Transport
 logger = logging.getLogger(__name__)
 
 _VALID_APPS = {"LISTENER", "INITF", "RESPF", "NONE"}
+
+# [Verificado 2026-08-06] Tras STOP, el firmware tarda un instante en volver a
+# NONE: un STAT inmediato aún reporta la app anterior corriendo.
+_STOP_SETTLE_S = 0.3
 _PRFSETS = {"BPRF3", "BPRF4", "BPRF5", "BPRF6"}
 _RRUS = {"SSTWR", "DSTWR", "SSTWRNDEF", "DSTWRNDEF"}
 _VUPPER_RE = re.compile(r"^([0-9A-Fa-f]{2}:){7}[0-9A-Fa-f]{2}$")
@@ -182,7 +186,9 @@ class DwmCliClient:
                 continue
             received_any = True
             lines.append(line)
-            if stripped.lower() == "ok":
+            # "ok" y "KO" son los marcadores de fin de respuesta del firmware
+            # (éxito y error respectivamente; el KO se observó en fw 1.1.0).
+            if stripped.lower() in ("ok", "ko"):
                 break
         return lines
 
@@ -208,12 +214,14 @@ class DwmCliClient:
             UnexpectedModeError: si tras dos intentos el modo no es NONE.
         """
         info: DeviceInfo | None = None
-        for _ in range(2):
+        for attempt in range(2):
             self.stop()
+            time.sleep(_STOP_SETTLE_S)
             info = self.stat()
             if info.mode == "NONE":
                 return
-            logger.warning("El dispositivo %s sigue en modo %s tras STOP", self.name, info.mode)
+            log = logger.warning if attempt else logger.debug
+            log("El dispositivo %s sigue en modo %s tras STOP", self.name, info.mode)
         mode = info.mode if info is not None else "?"
         raise UnexpectedModeError(
             f"{self.name}: el dispositivo reporta modo {mode!r} y se requiere NONE"
@@ -226,7 +234,12 @@ class DwmCliClient:
         return parse_listcal(self.send_command("LISTCAL", timeout_s=5.0))
 
     def calkey_read(self, key: str) -> CalKey:
-        """``CALKEY <key>``: lee una clave de calibración (requiere modo NONE)."""
+        """``CALKEY <key>``: lee una clave de calibración (requiere modo NONE).
+
+        [Verificado 2026-08-06] En fw 1.1.0 la forma de lectura de ``CALKEY``
+        está rota: responde ``KO`` para cualquier clave, incluso las listadas
+        por ``LISTCAL``. Como respaldo, la clave se lee filtrando ``LISTCAL``.
+        """
         lines = self.send_command(f"CALKEY {key}")
         for line in lines:
             try:
@@ -235,15 +248,20 @@ class DwmCliClient:
                 continue
             if cal_key.name == key:
                 return cal_key
+        logger.debug("CALKEY %s sin respuesta directa en %s; leyendo vía LISTCAL", key, self.name)
+        keys = self.listcal()
+        if key in keys:
+            return keys[key]
         raise CommandRejectedError(
-            f"{self.name}: CALKEY {key} no devolvió la clave; respuesta: {lines!r}"
+            f"{self.name}: la clave {key} no existe "
+            f"(CALKEY respondió {lines!r} y no figura en LISTCAL)"
         )
 
     def calkey_write(self, key: str, value: int) -> CalKey:
         """``CALKEY <key> <value>``: escribe y **verifica releyendo** (plan §4.3).
 
-        El valor se envía en decimal, como el ejemplo del manual (guía §2.3).
-        TODO(verificar-con-hardware): confirmar el formato de entrada en F6.
+        El valor se envía en decimal. [Verificado 2026-08-06] El firmware
+        interpreta la entrada en decimal: escribir ``10`` produce ``0x0a``.
 
         Raises:
             CommandRejectedError: si la relectura no coincide con lo escrito.
