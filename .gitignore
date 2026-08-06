@@ -38,3 +38,6 @@ Desktop.ini
 
 # --- Claude Code (config local del usuario) ---
 .claude/settings.local.json
+
+# --- Archivos de pruebas manuales locales ---
+prueba.py

@@ -45,8 +45,10 @@ SCRIPT_OK: dict[str, list[str]] = {
     "DECAID": DECAID_OK,
     "GETOTP": ["0x01A: 0x00004015", "0x01C: 0x00004015", "ok"],
     "LISTCAL": LISTCAL_LINES,
-    "CALKEY xtal_trim": ["xtal_trim: 0x32 (len: 1)", "ok"],
-    "CALKEY xtal_trim 50": ["xtal_trim: 0x32 (len: 1)", "ok"],
+    "CALKEY ant0.ch9.ant_delay": ["ant0.ch9.ant_delay: 0x3FF7 (len: 4)", "ok"],
+    # B2 elige la primera clave de LISTCAL con valor <=9: restricted_channels (0).
+    "CALKEY restricted_channels 0": ["restricted_channels: 0x0000 (len: 2)", "ok"],
+    "CALKEY restricted_channels": ["restricted_channels: 0x0000 (len: 2)", "ok"],
     "UART": ["uart: 0", "ok"],
     "DIAG": ["diag: 1", "ok"],
     "LCFG": ["CHAN: 9", "PCODE: 10", "ok"],

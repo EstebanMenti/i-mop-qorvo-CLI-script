@@ -138,13 +138,18 @@ def _a7_listcal(ctx: CheckContext) -> tuple[str, list[str]]:
 
 
 def _a8_calkey_read(ctx: CheckContext) -> tuple[str, list[str]]:
-    cal_key = ctx.client.calkey_read("xtal_trim")
+    # [Verificado 2026-08-06] xtal_trim (ejemplo del manual) no existe en
+    # fw 1.1.0; se usa la clave de retardo de antena, que sí está garantizada.
+    cal_key = ctx.client.calkey_read("ant0.ch9.ant_delay")
     _require(
-        cal_key.length_bytes == 1,
-        f"xtal_trim: longitud esperada 1 byte, reportada {cal_key.length_bytes}",
+        cal_key.value > 0,
+        f"ant0.ch9.ant_delay con valor no plausible: {cal_key.value}",
         [cal_key.raw],
     )
-    return (f"xtal_trim=0x{cal_key.value:X} (len {cal_key.length_bytes})", [cal_key.raw])
+    return (
+        f"ant0.ch9.ant_delay=0x{cal_key.value:X} ({cal_key.value}), len {cal_key.length_bytes}",
+        [cal_key.raw],
+    )
 
 
 def _a9_uart(ctx: CheckContext) -> tuple[str, list[str]]:
@@ -182,9 +187,15 @@ def _b1_cleanup(ctx: CheckContext) -> None:
 
 def _b2_calkey_rewrite(ctx: CheckContext) -> tuple[str, list[str]]:
     # Escribe el valor que la clave ya tiene: efecto neto nulo (plan §5.1 B2).
-    current = ctx.client.calkey_read("xtal_trim")
-    written = ctx.client.calkey_write("xtal_trim", current.value)
-    return (f"xtal_trim reescrito con su propio valor ({current.value})", [written.raw])
+    # Se elige una clave con valor <= 9 para que la escritura sea idéntica en
+    # decimal y en hexadecimal: inmune a la ambigüedad de formato de entrada
+    # de CALKEY (TODO(verificar-con-hardware) del plan §4.3).
+    keys = ctx.client.listcal()
+    candidate = next((key for key in keys.values() if key.value <= 9), None)
+    if candidate is None:
+        raise CheckFailedError("sin claves de valor <=9 para la reescritura neutra", [])
+    written = ctx.client.calkey_write(candidate.name, candidate.value)
+    return (f"{candidate.name} reescrita con su propio valor ({candidate.value})", [written.raw])
 
 
 def _b3_setapp_save(ctx: CheckContext) -> tuple[str, list[str]]:
@@ -258,7 +269,7 @@ ALL_CHECKS: tuple[CommandCheck, ...] = (
     CommandCheck("A5", "A5 DECAID", "DECAID", _a5_decaid),
     CommandCheck("A6", "A6 GETOTP", "GETOTP", _a6_getotp),
     CommandCheck("A7", "A7 LISTCAL", "LISTCAL", _a7_listcal),
-    CommandCheck("A8", "A8 CALKEY (lectura)", "CALKEY xtal_trim", _a8_calkey_read),
+    CommandCheck("A8", "A8 CALKEY (lectura)", "CALKEY ant0.ch9.ant_delay", _a8_calkey_read),
     CommandCheck("A9", "A9 UART (consulta)", "UART", _a9_uart),
     CommandCheck("A10", "A10 DIAG (consulta)", "DIAG", _a10_diag_query),
     CommandCheck("A11", "A11 LCFG", "LCFG", _a11_lcfg),
@@ -266,7 +277,7 @@ ALL_CHECKS: tuple[CommandCheck, ...] = (
     CommandCheck(
         "B2",
         "B2 CALKEY (escritura neutra)",
-        "CALKEY xtal_trim <valor actual>",
+        "CALKEY <clave de valor <=9> <su valor actual>",
         _b2_calkey_rewrite,
     ),
     CommandCheck("B3", "B3 SETAPP + SAVE", "SETAPP NONE → SAVE", _b3_setapp_save),

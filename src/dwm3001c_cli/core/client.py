@@ -182,7 +182,9 @@ class DwmCliClient:
                 continue
             received_any = True
             lines.append(line)
-            if stripped.lower() == "ok":
+            # "ok" y "KO" son los marcadores de fin de respuesta del firmware
+            # (éxito y error respectivamente; el KO se observó en fw 1.1.0).
+            if stripped.lower() in ("ok", "ko"):
                 break
         return lines
 

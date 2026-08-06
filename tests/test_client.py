@@ -56,6 +56,16 @@ class TestSendCommand:
         assert exc_info.value.port == "FAKE"
         assert exc_info.value.command == "STAT"
 
+    def test_stops_at_ko_error_marker(self) -> None:
+        # Respuesta real de fw 1.1.0 ante una clave inexistente (2026-08-06).
+        client, _ = make_client(
+            {"CALKEY nada": ["", "Please enter a valid key: nada", "", "", "KO"]}
+        )
+
+        lines = client.send_command("CALKEY nada")
+
+        assert lines[-1] == "KO"
+
     def test_quiet_period_ends_collection_without_ok(self) -> None:
         client, _ = make_client({"THREAD": ["linea 1", "linea 2"]})
 
