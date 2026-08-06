@@ -52,7 +52,7 @@ Hallazgos operativos adicionales: tras `STOP` el firmware tarda un instante en v
 
 | Ítem | Estado |
 |---|---|
-| Sintaxis de los flags `MULTI`/`HOP` de `INITF`/`RESPF` | Sin verificar (el manual no muestra ejemplos; el cliente asume `-MULTI`/`-HOP`) |
+| Sintaxis de los flags `MULTI`/`HOP` de `INITF`/`RESPF` | ✅ Confirmada por el `HELP INITF` del propio firmware el 2026-08-06: `-MULTI`/`-HOP` sin valor, tal como asume el cliente (ver [referencia-comandos-fw110.md](referencia-comandos-fw110.md) §2.1). No ejercitados en sesión |
 | VID del conector J9 (SEGGER J-Link, `0x1366`) | Sin verificar (ambas placas se conectaron por J20/Nordic) |
 | Persistencia de calibración tras ciclo de alimentación | ✅ Verificada el 2026-08-06 (ver [resultados-calibracion.md](resultados-calibracion.md)) |
 
