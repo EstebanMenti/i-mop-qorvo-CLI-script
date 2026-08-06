@@ -113,8 +113,27 @@ class TestCalKeys:
 
         assert cal_key.value == 0x4015
 
-    def test_calkey_read_without_key_in_response_raises(self) -> None:
-        client, _ = make_client({"CALKEY nada": ["error: unknown key", "ok"]})
+    def test_calkey_read_falls_back_to_listcal_on_fw_bug(self) -> None:
+        # fw 1.1.0: la lectura directa responde KO incluso para claves válidas.
+        client, transport = make_client(
+            {
+                "CALKEY ant0.ch9.ant_delay": ["", "Please enter a valid key: ...", "KO"],
+                "LISTCAL": ["ant0.ch9.ant_delay: 0x3FF7 (len: 4)", "ok"],
+            }
+        )
+
+        cal_key = client.calkey_read("ant0.ch9.ant_delay")
+
+        assert cal_key.value == 0x3FF7
+        assert "LISTCAL" in transport.sent
+
+    def test_calkey_read_nonexistent_key_raises(self) -> None:
+        client, _ = make_client(
+            {
+                "CALKEY nada": ["", "Please enter a valid key: nada", "KO"],
+                "LISTCAL": ["xtal_trim: 0x32 (len: 1)", "ok"],
+            }
+        )
 
         with pytest.raises(CommandRejectedError, match="nada"):
             client.calkey_read("nada")

@@ -188,6 +188,8 @@ xtal_trim: 0x1 (len: 1)
 ```
 
 > **[Nota 2026-08-06 — verificado con hardware real]** En firmware 1.1.0, la clave `xtal_trim` del ejemplo del manual **no existe**: `CALKEY xtal_trim` responde `Please enter a valid key: xtal_trim` y cierra con **`KO`** — el firmware usa `KO` como marcador de fin de respuesta con error, simétrico al `ok`. Además, `LISTCAL` reporta **259 claves** (el extracto del manual es solo una muestra), y el retardo de antena por defecto observado en una placa de fábrica fue `ant0.ch9.ant_delay = 0x3FF7` (16375).
+>
+> **Más grave: la forma de lectura `CALKEY <key>` está rota en fw 1.1.0.** Responde `Please enter a valid key` + `KO` para **cualquier** clave, incluidas las que `LISTCAL` lista (verificado con `ant0.ch9.ant_delay`, `restricted_channels`, `wifi_coex_mode`, con y sin comillas, en mayúsculas y minúsculas; `HELP CALKEY` confirma que la sintaxis usada es la correcta). La forma de **escritura funciona** y responde con la línea `clave: 0xVALOR (len: N)` del valor recién escrito. **El valor de entrada se interpreta en decimal** (verificado: escribir `10` produce `0x0a`). *Workaround:* para leer una clave individual, filtrar la salida de `LISTCAL`.
 
 > **Formato de los valores.** El firmware **responde en hexadecimal** e indica la longitud del campo en bytes (`len`). En el ejemplo del manual el valor se ingresa en decimal (`1`) y se devuelve como `0x1`. Conviene confirmar el formato de entrada con una lectura previa antes de escribir un valor grande.
 
