@@ -120,8 +120,8 @@ def _format_app_options(params: Mapping[str, object]) -> list[str]:
                 )
             parts.append(f"-VUPPER={vupper}")
         elif name in ("multi", "hop"):
-            # TODO(verificar-con-hardware): el manual no muestra la sintaxis de
-            # estos flags; se asume "-MULTI"/"-HOP" sin valor (F6).
+            # [Verificado 2026-08-06] HELP INITF del fw 1.1.0 confirma la
+            # sintaxis: flags "-MULTI"/"-HOP" sin valor.
             if not isinstance(value, bool):
                 raise ValueError(f"Opción {name!r}: se espera bool; llegó {value!r}")
             if value:
