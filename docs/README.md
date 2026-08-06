@@ -14,6 +14,7 @@
 | [arquitectura.md](arquitectura.md) | Diseño del software: capas, módulos, responsabilidades y flujo de datos | Desarrolladores |
 | [plan-implementacion.md](plan-implementacion.md) | Plan de implementación por fases, con especificación detallada de cada módulo y criterios de aceptación | Desarrolladores / IA implementadora |
 | [resultados-validacion.md](resultados-validacion.md) | Acta de la campaña de validación de comandos (fw 1.1.0): resultado 18/18, hallazgos de firmware y evidencia archivada en [validaciones/](validaciones/) | Todos |
+| [resultados-calibracion.md](resultados-calibracion.md) | Acta de la calibración de antenna delay: COM28 de +36 cm a +1,3 cm de error, persistencia verificada, sensibilidad real medida | Todos |
 
 ## 2. Documentos de referencia (fabricante)
 
