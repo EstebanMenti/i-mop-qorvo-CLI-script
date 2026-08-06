@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dwm3001c-cli"
+version = "0.1.0"
+description = "Validación de comandos CLI y calibración de antenna delay para el módulo Qorvo DWM3001C (placa DWM3001CDK)"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Esteban Menti", email = "esteban.menti@gmail.com" }]
+dependencies = [
+    "pyserial>=3.5",
+    "typer>=0.12",
+    "rich>=13.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "mypy>=1.10",
+    "types-pyyaml",
+]
+
+[project.scripts]
+dwm = "dwm3001c_cli.app.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+mypy_path = "src"
+packages = ["dwm3001c_cli"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-m 'not hardware'"
+markers = [
+    "hardware: tests que requieren placas DWM3001CDK conectadas (excluidos por defecto)",
+]
