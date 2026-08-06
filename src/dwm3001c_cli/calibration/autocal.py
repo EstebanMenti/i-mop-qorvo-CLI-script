@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -152,7 +153,13 @@ def autocalibrate(
             device.calkey_write(key, current_delay)
             error, stats_probe = measure(cfg.probe_step_units)
             change_cm = stats_initial.mean_cm - stats_probe.mean_cm
-            noise_cm = 2.0 * max(stats_initial.std_cm, stats_probe.std_cm)
+            # Ruido de la DIFERENCIA DE MEDIAS: se propaga el error estándar de
+            # cada media (std/sqrt(n)), no el desvío de las muestras — con
+            # multipath el desvío individual puede superar al escalón sin que
+            # la media deje de ser confiable (verificado en banco real).
+            sem_initial = stats_initial.std_cm / math.sqrt(max(stats_initial.n_success, 1))
+            sem_probe = stats_probe.std_cm / math.sqrt(max(stats_probe.n_success, 1))
+            noise_cm = 2.0 * math.hypot(sem_initial, sem_probe)
             if change_cm <= 0 or change_cm < noise_cm:
                 raise CalibrationError(
                     f"El escalón de +{cfg.probe_step_units} unidades no produjo un "
