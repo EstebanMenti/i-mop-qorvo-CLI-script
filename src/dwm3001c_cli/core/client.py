@@ -376,11 +376,16 @@ class DwmCliClient:
         (al menos uno es obligatorio). Sin ``duration_s``, retorna en el primer
         silencio del puerto. Las líneas que no son notificaciones se ignoran;
         las notificaciones mal formadas se loguean y se descartan.
+
+        [Verificado 2026-08-06] En fw 1.1.0 cada ``SESSION_INFO_NTF`` llega
+        partida en dos líneas (la continuación arranca con un ``\\r`` residual);
+        se reensambla acumulando líneas hasta balancear las llaves ``{}``.
         """
         if duration_s is None and max_count is None:
             raise ValueError("Indicar duration_s y/o max_count")
         deadline = None if duration_s is None else time.monotonic() + duration_s
         measurements: list[Measurement] = []
+        fragment: list[str] = []
         while True:
             if max_count is not None and len(measurements) >= max_count:
                 break
@@ -391,12 +396,26 @@ class DwmCliClient:
                 if deadline is None:
                     break
                 continue
-            if not line.strip().startswith("SESSION_INFO_NTF"):
+            stripped = line.strip()
+            if stripped.startswith("SESSION_INFO_NTF"):
+                fragment = [stripped]
+            elif fragment:
+                fragment.append(stripped)
+            else:
                 continue
+            joined = " ".join(fragment)
+            if joined.count("{") > joined.count("}"):
+                if len(fragment) > 8:
+                    logger.warning(
+                        "Notificación inconclusa descartada en %s: %r", self.name, joined
+                    )
+                    fragment = []
+                continue
+            fragment = []
             try:
-                measurement = parse_session_info(line)
+                measurement = parse_session_info(joined)
             except ValueError:
-                logger.warning("Notificación no parseable en %s: %r", self.name, line)
+                logger.warning("Notificación no parseable en %s: %r", self.name, joined)
                 continue
             measurements.append(measurement)
             if on_measurement is not None:

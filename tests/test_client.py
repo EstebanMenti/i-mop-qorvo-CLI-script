@@ -301,6 +301,27 @@ class TestNotifications:
         with pytest.raises(ValueError, match="duration_s"):
             client.read_notifications()
 
+    def test_reassembles_multiline_notifications_from_fw110(self) -> None:
+        # Formato real capturado el 2026-08-06: dos líneas, la continuación
+        # arranca con un \r residual; intercaladas con SESSION_STATUS_NTF.
+        client, _ = make_client(
+            {},
+            notifications=[
+                'SESSION_STATUS_NTF: {state="ACTIVE", reason="State change"}',
+                "SESSION_INFO_NTF: {session_handle=1, sequence_number=0, block_index=0,"
+                " n_measurements=1",
+                '\r [mac_address=0x0001, status="SUCCESS", distance[cm]=19]}',
+                "SESSION_INFO_NTF: {session_handle=1, sequence_number=1, block_index=1,"
+                " n_measurements=1",
+                '\r [mac_address=0x0001, status="SUCCESS", distance[cm]=16]}',
+            ],
+        )
+
+        measurements = client.read_notifications(max_count=5)
+
+        assert [m.distance_cm for m in measurements] == [19, 16]
+        assert all(m.status == "SUCCESS" for m in measurements)
+
     def test_callback_receives_each_measurement(self) -> None:
         received: list[int] = []
         client, _ = make_client({}, notifications=[ntf_line(4)])
