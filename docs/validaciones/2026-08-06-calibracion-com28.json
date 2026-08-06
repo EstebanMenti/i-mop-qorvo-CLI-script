@@ -1,0 +1,59 @@
+{
+  "fecha": "2026-08-06T13:25:17",
+  "device_port": "COM28",
+  "reference_port": "COM26",
+  "key": "ant0.ch9.ant_delay",
+  "real_distance_cm": 220.00000000000003,
+  "initial_delay": 16371,
+  "final_delay": 16459,
+  "sensitivity_cm_per_unit": 0.572999999999999,
+  "iterations": [
+    {
+      "index": 0,
+      "delay": 16371,
+      "mean_cm": 256.09,
+      "std_cm": 6.2850536990546075,
+      "n_success": 100,
+      "error_cm": 36.08999999999995,
+      "correction_units": null
+    },
+    {
+      "index": 1,
+      "delay": 16391,
+      "mean_cm": 244.63,
+      "std_cm": 3.9462767262319556,
+      "n_success": 100,
+      "error_cm": 24.629999999999967,
+      "correction_units": 20
+    },
+    {
+      "index": 2,
+      "delay": 16434,
+      "mean_cm": 231.65,
+      "std_cm": 3.05081956201936,
+      "n_success": 100,
+      "error_cm": 11.649999999999977,
+      "correction_units": 43
+    },
+    {
+      "index": 3,
+      "delay": 16454,
+      "mean_cm": 222.63,
+      "std_cm": 1.5274488534808621,
+      "n_success": 100,
+      "error_cm": 2.629999999999967,
+      "correction_units": 20
+    },
+    {
+      "index": 4,
+      "delay": 16459,
+      "mean_cm": 221.26,
+      "std_cm": 1.8634376834227648,
+      "n_success": 100,
+      "error_cm": 1.2599999999999625,
+      "correction_units": 5
+    }
+  ],
+  "converged": true,
+  "saved": true
+}

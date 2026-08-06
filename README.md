@@ -1,6 +1,6 @@
 # dwm3001c-cli — Validación y calibración del Qorvo DWM3001C por CLI
 
-> **Estado:** fases F0–F3 completadas. La **validación de comandos está cumplida: 18/18 checks PASS contra hardware real** (fw 1.1.0, dos placas — ver [docs/resultados-validacion.md](docs/resultados-validacion.md)). En curso: F4, calibración automática del *antenna delay* (ver [docs/plan-implementacion.md](docs/plan-implementacion.md)).
+> **Estado:** fases F0–F4 completadas. **Ambos objetivos funcionales cumplidos contra hardware real** (fw 1.1.0): validación de comandos 18/18 PASS ([docs/resultados-validacion.md](docs/resultados-validacion.md)) y calibración automática de *antenna delay* convergida y persistida — error de +36 cm a +1,3 cm ([docs/resultados-calibracion.md](docs/resultados-calibracion.md)). En curso: F5, interfaz de línea de comandos `dwm` (ver [docs/plan-implementacion.md](docs/plan-implementacion.md)).
 > **Alcance:** herramienta Python de línea de comandos para validar el firmware CLI del módulo **Qorvo DWM3001C** (placa de desarrollo **DWM3001CDK**) y automatizar la **calibración del retardo de antena** (*antenna delay*) por Two-Way Ranging.
 
 ---

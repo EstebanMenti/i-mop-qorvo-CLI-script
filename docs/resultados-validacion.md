@@ -54,7 +54,7 @@ Hallazgos operativos adicionales: tras `STOP` el firmware tarda un instante en v
 |---|---|
 | Sintaxis de los flags `MULTI`/`HOP` de `INITF`/`RESPF` | Sin verificar (el manual no muestra ejemplos; el cliente asume `-MULTI`/`-HOP`) |
 | VID del conector J9 (SEGGER J-Link, `0x1366`) | Sin verificar (ambas placas se conectaron por J20/Nordic) |
-| Persistencia de calibración tras ciclo de alimentación | Se verifica en la fase F4/F6 (requiere intervención manual) |
+| Persistencia de calibración tras ciclo de alimentación | ✅ Verificada el 2026-08-06 (ver [resultados-calibracion.md](resultados-calibracion.md)) |
 
 ## 6. Conclusión
 

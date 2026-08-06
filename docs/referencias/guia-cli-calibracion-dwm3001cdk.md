@@ -449,6 +449,8 @@ SAVE
 LISTCAL          ← confirmar que ant<x>.ch<y>.ant_delay conservó el valor
 ```
 
+> **[Nota 2026-08-06 — verificado con hardware real]** En fw 1.1.0, con `SAVE` posterior a la escritura de `CALKEY`, la calibración **persiste tras el ciclo de alimentación** (verificado: `ant0.ch9.ant_delay=16459` conservado tras desconectar y reconectar la placa). No se ensayó el caso sin `SAVE`, de modo que la recomendación práctica de esta sección se mantiene: ejecutar siempre `SAVE` al terminar.
+
 ---
 
 ## 5. Alternativas al procedimiento manual
