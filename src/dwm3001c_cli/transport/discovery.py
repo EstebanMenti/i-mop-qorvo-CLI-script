@@ -5,8 +5,10 @@ La placa expone dos interfaces USB posibles (guía §1.2):
 - Conector J9 (*interface MCU*): puerto COM del J-Link OB de SEGGER, VID 0x1366.
 - Conector J20 (*nRF USB*): puerto COM directo del nRF52833, VID 0x1915 (Nordic).
 
-[Fuera del manual] Los VID son los registrados por SEGGER y Nordic Semiconductor;
-se confirman contra hardware real en la fase F6.
+[Fuera del manual] Los VID son los registrados por SEGGER y Nordic Semiconductor.
+El VID de Nordic (0x1915, conector J20) fue confirmado contra hardware real el
+2026-08-06 (placa detectada como "Dispositivo serie USB", hint nrf-usb). El VID
+de SEGGER (J9) queda pendiente de confirmación en F6.
 """
 
 from __future__ import annotations
