@@ -135,6 +135,8 @@ JS0108{"Info":{
 "UWB stack":"R12.7.0-..."}}
 ```
 
+> **[Nota 2026-08-06 — verificado con hardware real]** En una DWM3001CDK con firmware CLI 1.1.0 (build 13/08/2025, `Device: "DWM3001CDK - DW3_QM33_SDK - FreeRTOS"`), la salida real de `STAT` difiere del ejemplo del manual en tres puntos: **(1)** no se emite la línea `MODE: NONE` — el modo debe derivarse del campo `"Current App"` del JSON; **(2)** el bloque `JSxxxx{...}` llega **partido en varias líneas** (una por campo); **(3)** la placa hace **eco del comando** como primera línea y cierra la respuesta con una línea `ok`. El terminador de línea aceptado en TX es `\r\n`.
+
 ### 2.2 Service Commands (secc. 7.4, págs. 41–46) — solo en modo NONE
 
 | Comando | Secc. | Descripción |
