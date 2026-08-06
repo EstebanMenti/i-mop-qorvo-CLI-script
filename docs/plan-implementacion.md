@@ -20,9 +20,9 @@
 
 | Fase | Contenido | Rama | Depende de | Estado |
 |---|---|---|---|---|
-| F0 | Andamiaje del paquete, errores, logging | `feature/f0-scaffolding` | — | Pendiente |
-| F1 | Capa de transporte serie + descubrimiento | `feature/f1-transport` | F0 | Pendiente |
-| F2 | Cliente CLI, parsers y modelos | `feature/f2-core` | F1 | Pendiente |
+| F0 | Andamiaje del paquete, errores, logging | `feature/f0-scaffolding` | — | ✅ Completada (PR #1) |
+| F1 | Capa de transporte serie + descubrimiento | `feature/f1-transport` | F0 | ✅ Completada (PR #2, verificada con hardware: VID Nordic, terminador `\r\n`) |
+| F2 | Cliente CLI, parsers y modelos | `feature/f2-core` | F1 | ✅ Completada (PR #3) |
 | F3 | Suite de validación de comandos + reportes | `feature/f3-validation` | F2 | Pendiente |
 | F4 | Muestreo TWR y calibración automática | `feature/f4-calibration` | F2 | Pendiente |
 | F5 | Aplicación de consola (`dwm …`) | `feature/f5-app` | F3, F4 | Pendiente |

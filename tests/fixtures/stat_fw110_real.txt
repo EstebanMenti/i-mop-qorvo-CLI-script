@@ -1,0 +1,11 @@
+STAT
+JS0109{"Info":{
+"Device":"DWM3001CDK - DW3_QM33_SDK - FreeRTOS",
+"Current App":"NONE",
+"Version":"1.1.0",
+"Build":"Aug 13 2025 14:23:02",
+"Apps":["LISTENER","RESPF","INITF"],
+"Driver":"DW3XXX Device Driver Version 08.19.02",
+"UWB stack":"R12.7.0-405-gb33c5c4272"}}
+
+ok

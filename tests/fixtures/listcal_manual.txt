@@ -1,0 +1,16 @@
+LISTCAL
+restricted_channels: 0x0000 (len: 2)
+wifi_coex_mode: 0x00 (len: 1)
+wifi_coex_time_gap: 0x00 (len: 1)
+ch5.wifi_coex_enabled: 0x01 (len: 1)
+ch5.pll_locking_code: 0x00 (len: 1)
+ch9.wifi_coex_enabled: 0x01 (len: 1)
+ant0.ch9.ant_delay: 0x4015 (len: 4)
+ant_set0.rx_ants: 0x000001 (len: 3)
+ant_set0.tx_ant_path: 0x00 (len: 1)
+ant_set0.nb_rx_ants: 0x01 (len: 1)
+ant_set0.rx_ants_are_pairs: 0x00 (len: 1)
+ant_set0.tx_power_control: 0x01 (len: 1)
+experimental.mac.session_scheduler.id: 0x00 (len: 1)
+
+ok
