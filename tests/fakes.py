@@ -34,6 +34,16 @@ class FakeTransport:
         self.sent: list[str] = []
         self.opened = False
         self._pending: deque[str] = deque()
+        self._queued: dict[str, deque[list[str]]] = {}
+
+    def queue_response(self, command: str, lines: list[str]) -> None:
+        """Encola una respuesta de un solo uso para ``command``.
+
+        Las respuestas encoladas tienen prioridad sobre el guion estático y se
+        consumen en orden FIFO: permite simular comandos cuya respuesta cambia
+        con el estado de la placa (p. ej. ``STAT`` antes y después de INITF).
+        """
+        self._queued.setdefault(command, deque()).append(list(lines))
 
     @property
     def name(self) -> str:
@@ -47,6 +57,10 @@ class FakeTransport:
 
     def write_line(self, line: str) -> None:
         self.sent.append(line)
+        queued = self._queued.get(line)
+        if queued:
+            self._pending.extend(queued.popleft())
+            return
         response = self.script.get(line)
         if response is None:
             first_word = line.split(maxsplit=1)[0] if line.strip() else line
