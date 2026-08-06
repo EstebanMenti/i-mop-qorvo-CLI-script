@@ -24,7 +24,7 @@
 | F1 | Capa de transporte serie + descubrimiento | `feature/f1-transport` | F0 | ✅ Completada (PR #2, verificada con hardware: VID Nordic, terminador `\r\n`) |
 | F2 | Cliente CLI, parsers y modelos | `feature/f2-core` | F1 | ✅ Completada (PR #3) |
 | F3 | Suite de validación de comandos + reportes | `feature/f3-validation` | F2 | ✅ Completada (PR #4) |
-| F4 | Muestreo TWR y calibración automática | `feature/f4-calibration` | F2 | Pendiente |
+| F4 | Muestreo TWR y calibración automática | `feature/f4-calibration` | F2 | ✅ Completada (PR #7) |
 | F5 | Aplicación de consola (`dwm …`) | `feature/f5-app` | F3, F4 | Pendiente |
 | F6 | Verificación con hardware real y cierre | `feature/f6-hardware-verification` | F5 | Pendiente |
 
