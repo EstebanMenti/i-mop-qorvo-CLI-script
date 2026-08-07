@@ -443,7 +443,13 @@ Ejemplo real (banco interior a 2,20 m, tramas consecutivas del mismo transmisor)
 
 La variación entre tramas consecutivas es normal en interiores (personas, muebles y paredes modifican el canal en tiempo real). Para juzgar un enlace conviene mirar la **tendencia** de muchas tramas, no una individual.
 
-> **Nota:** existen claves de calibración relacionadas con el diagnóstico del CIR (`rx_diag_config.cir_n_taps`, `rx_diag_config.cir_fp_tap_offset` — ver §3.3), pero el CLI no expone el volcado del CIR; para análisis fino de multipath el camino es la interfaz **UCI** con `uwb-qorvo-tools`. Para el detalle del cálculo de `rsl`/`fsl`, el manual remite a las *Diagnostic APIs* del **DW3000 User Manual** (guía, Anexo C).
+**¿Y por UCI? Tampoco hay veredicto NLOS — verificado contra el SDK del fabricante (QM33SDK-1.1.1):**
+
+- El protocolo FiRa UCI **sí define un campo `nlos`** en cada medición TWR (*FiRa UCI Generic Technical Specification 2.0.0*, §RANGE_DATA_NTF; el parser del fabricante lo lee en `SDK/Tools/uwb-qorvo-tools/lib/uwb-uci/uci/qorvo_msg.py`, con el comentario *"Is a non-Line of sight measurement?"*).
+- **Pero el stack de Qorvo no lo implementa en esta plataforma**: la propia herramienta `run_fira_twr` lo imprime fijo como `is nlos meas: Unsupported` (mismo archivo, método `__str__`), y todos los ejemplos de su README lo muestran así.
+- Tampoco existe en `uwb-qorvo-tools` un script de volcado del CIR (los scripts disponibles cubren calibración, configuración, tests PER/CW y ranging). Las claves `rx_diag_config.cir_*` de §3.3 configuran el diagnóstico interno, pero ninguna interfaz de este SDK lo expone al usuario.
+
+**Conclusión (verificada por CLI, por UCI y por el código del SDK):** en esta plataforma, ningún firmware entrega un indicador NLOS por medición. La determinación es responsabilidad del **host**, combinando los indicadores físicos disponibles (`rsl−fsl` en LISTENER, RSSI y dispersión en TWR) con algoritmos sobre la serie de mediciones: detección de saltos discretos, asimetría del error (el NLOS solo sobreestima) y, en un sistema de posicionamiento, redundancia geométrica entre anclas. Para el detalle del cálculo de `rsl`/`fsl`, ver las *Diagnostic APIs* del **DW3000 User Manual** (guía, Anexo C).
 
 ## 6. Tabla resumen
 

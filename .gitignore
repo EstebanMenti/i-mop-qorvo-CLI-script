@@ -41,3 +41,6 @@ Desktop.ini
 
 # --- Archivos de pruebas manuales locales ---
 prueba.py
+
+# --- SDK del fabricante (material propietario de Qorvo, no versionable) ---
+SDK/
