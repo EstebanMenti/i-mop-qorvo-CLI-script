@@ -16,6 +16,15 @@
 | Notificaciones | `SESSION_STATUS_NTF` y `SESSION_INFO_NTF` aparecen de forma asincrónica durante una sesión; `SESSION_INFO_NTF` llega **en dos líneas** (la continuación arranca con un `\r` residual) |
 | Ayuda por comando | `HELP <CMD>` funciona para todos los comandos listados por `HELP` |
 
+> **Todo lo anterior corresponde al bridge USB del conector J20** (el que usa este proyecto). El resto del documento asume ese camino salvo que se indique lo contrario.
+
+### 0.1 Conector J9 (bridge UART del J-Link) — verificado 2026-08-10, solo diagnóstico
+
+El chip J-Link de a bordo también expone un puerto COM (`JLink CDC UART Port`, VID SEGGER `0x1366`) que bridgea el mismo UART físico que habilita el comando `UART 1` (§3.1). Probado puntualmente para diagnóstico, **no es un camino soportado por esta herramienta**:
+
+- **Comandos con respuesta chica** (`STAT`, `DECAID`): funcionan correctamente. El eco del comando llega **pegado sin separador** al comienzo de la primera línea de respuesta (p. ej. `"STAT\rJS0109{...}"`, con `\r` pero sin `\n` entre medio) — a diferencia de J20, donde el eco siempre es su propia línea. `DwmCliClient.send_command()` lo detecta y recorta correctamente (verificado con hardware real).
+- **Comandos con respuesta grande** (`LISTCAL`, 259 líneas; `GETOTP`, 131 líneas): el contenido **llega corrompido** pasado cierto punto (bytes perdidos/mezclados, patrón compatible con overrun de buffer — no hay control de flujo por hardware en la configuración de puerto de este proyecto). No es un problema de parseo: los bytes ya llegan mal a la PC. **No se intentó corregir** — aceptar esos datos igual sería peligroso (podría interpretarse una calibración corrompida como válida). Si en el futuro se necesitara este camino de forma confiable, habría que investigar control de flujo por hardware (RTS/CTS) o una tasa de baudios menor; queda fuera del alcance actual del proyecto, que usa J20 como única interfaz soportada.
+
 ## 1. Anytime commands (ejecutables en cualquier momento)
 
 ### 1.1 `HELP` / `?`

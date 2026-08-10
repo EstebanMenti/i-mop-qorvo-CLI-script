@@ -66,6 +66,34 @@ class TestSendCommand:
 
         assert lines[-1] == "KO"
 
+    def test_strips_echo_glued_without_separator_bridge_j9(self) -> None:
+        # Real, bridge UART de J9 (COM25, 2026-08-10): el eco y el comienzo de
+        # la respuesta llegan pegados en una sola línea, sin separador (\n).
+        client, _ = make_client({"STAT": ['STAT\rJS0109{"Info":{', "ok"]})
+
+        lines = client.send_command("STAT")
+
+        assert lines[0] == 'JS0109{"Info":{'
+        assert lines[-1] == "ok"
+
+    def test_ignores_leading_blank_lines_before_glued_echo(self) -> None:
+        # Residuo de blancos entre comandos (visto en vivo tras un STOP previo)
+        # antes de que llegue el eco pegado al contenido real.
+        client, _ = make_client({"STAT": ["", "STAT\rJS0109{...}", "ok"]})
+
+        lines = client.send_command("STAT")
+
+        assert lines[0] == "JS0109{...}"
+
+    def test_does_not_strip_response_that_merely_starts_like_the_command(self) -> None:
+        # "DIAG: 0" no es un eco pegado: no hay separador entre "DIAG" y ":",
+        # es contenido real que empieza igual que el comando (guía §2.2).
+        client, _ = make_client({"DIAG": ["DIAG: 0", "ok"]})
+
+        lines = client.send_command("DIAG")
+
+        assert lines[0] == "DIAG: 0"
+
     def test_quiet_period_ends_collection_without_ok(self) -> None:
         client, _ = make_client({"THREAD": ["linea 1", "linea 2"]})
 

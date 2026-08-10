@@ -55,6 +55,10 @@ def parse_stat(lines: list[str]) -> DeviceInfo:
     - Manual (guía §2.1): línea ``MODE: NONE`` seguida del bloque ``JSxxxx{...}``.
     - Firmware 1.1.0 real: sin línea ``MODE:``, JSON partido en varias líneas y
       ``ok`` final; el modo se deriva de ``Current App``.
+
+    Asume que ``lines`` ya viene sin eco del comando (responsabilidad de
+    :meth:`DwmCliClient.send_command`, incluso cuando el bridge de transporte
+    pega el eco a la primera línea de respuesta sin separador — guía/J9).
     """
     raw = "\n".join(lines)
     mode: str | None = None
