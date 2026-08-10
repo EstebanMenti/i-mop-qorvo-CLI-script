@@ -8,7 +8,8 @@ La placa expone dos interfaces USB posibles (guía §1.2):
 [Fuera del manual] Los VID son los registrados por SEGGER y Nordic Semiconductor.
 El VID de Nordic (0x1915, conector J20) fue confirmado contra hardware real el
 2026-08-06 (placa detectada como "Dispositivo serie USB", hint nrf-usb). El VID
-de SEGGER (J9) queda pendiente de confirmación en F6.
+de SEGGER (0x1366, J9) fue confirmado por el usuario mediante validación manual
+propia (flasheo habitual de las placas por J9) el 2026-08-10.
 """
 
 from __future__ import annotations

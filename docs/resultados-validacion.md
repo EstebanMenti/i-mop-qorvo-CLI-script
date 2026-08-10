@@ -53,9 +53,23 @@ Hallazgos operativos adicionales: tras `STOP` el firmware tarda un instante en v
 | Ítem | Estado |
 |---|---|
 | Sintaxis de los flags `MULTI`/`HOP` de `INITF`/`RESPF` | ✅ Confirmada por el `HELP INITF` del propio firmware el 2026-08-06: `-MULTI`/`-HOP` sin valor, tal como asume el cliente (ver [referencia-comandos-fw110.md](referencia-comandos-fw110.md) §2.1). No ejercitados en sesión |
-| VID del conector J9 (SEGGER J-Link, `0x1366`) | Sin verificar (ambas placas se conectaron por J20/Nordic) |
+| VID del conector J9 (SEGGER J-Link, `0x1366`) | ✅ Confirmado por el usuario mediante validación manual propia (flasheo habitual de las placas por J9), 2026-08-10. No verificado mediante el `find_boards()` automatizado de este proyecto (ambas placas del banco se conectaron siempre por J20/Nordic) |
 | Persistencia de calibración tras ciclo de alimentación | ✅ Verificada el 2026-08-06 (ver [resultados-calibracion.md](resultados-calibracion.md)) |
 
 ## 6. Conclusión
 
 El **objetivo 1 del proyecto (validación de comandos CLI) está cumplido** para el firmware 1.1.0. El software queda apto para construir sobre él la calibración automática del retardo de antena (fase F4): la sesión TWR, la escritura verificada de claves y el parseo de mediciones están probados contra hardware real.
+
+## 7. Verificación final con la herramienta terminada (F6, 2026-08-10)
+
+Las secciones 1–6 documentan la campaña original (fase F3, 2026-08-06), corrida contra la biblioteca Python directamente. Para el cierre del proyecto (fase F6) se repitió la validación completa usando el **comando `dwm validate` real** (la interfaz de línea de comandos terminada en la fase F5), sin scripts intermedios:
+
+```powershell
+dwm validate --port COM26 --second-port COM28 --report-dir reports
+```
+
+**Resultado: 18 PASS · 0 FAIL · 0 SKIP** (exit code 0), incluida una sesión TWR completa entre ambas placas con 50/50 mediciones `SUCCESS`. Evidencia archivada en [validaciones/2026-08-10-validate-dwm-cli-final.md](validaciones/2026-08-10-validate-dwm-cli-final.md) y su [equivalente JSON](validaciones/2026-08-10-validate-dwm-cli-final.json).
+
+> **Nota sobre el valor de `ant0.ch9.ant_delay` de la placa A (COM26).** Esta corrida reporta `0x3FFC` (16380), distinto del `0x3FF7` (16375) registrado en la campaña original del §2. La diferencia se debe a que **el usuario modificó la placa manualmente entre ambas fechas, fuera del alcance de este proyecto** — no es un hallazgo de firmware ni una regresión del software; se deja constancia para que quien lea este documento no confunda ambos valores.
+
+Con esta corrida, el objetivo 1 queda verificado no solo a nivel de biblioteca sino con la herramienta final tal como la usará cualquier operador del banco.

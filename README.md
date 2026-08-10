@@ -1,6 +1,6 @@
 # dwm3001c-cli — Validación y calibración del Qorvo DWM3001C por CLI
 
-> **Estado:** fases F0–F4 completadas. **Ambos objetivos funcionales cumplidos contra hardware real** (fw 1.1.0): validación de comandos 18/18 PASS ([docs/resultados-validacion.md](docs/resultados-validacion.md)) y calibración automática de *antenna delay* convergida y persistida — error de +36 cm a +1,3 cm ([docs/resultados-calibracion.md](docs/resultados-calibracion.md)). En curso: F5, interfaz de línea de comandos `dwm` (ver [docs/plan-implementacion.md](docs/plan-implementacion.md)).
+> **Estado:** proyecto completo (fases F0–F6). **Ambos objetivos funcionales cumplidos contra hardware real** (fw 1.1.0): validación de comandos 18/18 PASS, incluso con la herramienta `dwm` terminada ([docs/resultados-validacion.md](docs/resultados-validacion.md)) y calibración automática de *antenna delay* convergida y persistida — error de +36 cm a +1,3 cm ([docs/resultados-calibracion.md](docs/resultados-calibracion.md)). Detalle de fases en [docs/plan-implementacion.md](docs/plan-implementacion.md).
 > **Alcance:** herramienta Python de línea de comandos para validar el firmware CLI del módulo **Qorvo DWM3001C** (placa de desarrollo **DWM3001CDK**) y automatizar la **calibración del retardo de antena** (*antenna delay*) por Two-Way Ranging.
 
 ---
@@ -36,18 +36,23 @@ python -m venv .venv
 pip install -e .[dev]
 ```
 
-## 4. Uso previsto
+## 4. Uso
 
-> **Nota:** interfaz definitiva sujeta al plan de implementación. Comandos previstos:
+Todos los comandos están verificados contra hardware real (ver [docs/resultados-validacion.md](docs/resultados-validacion.md) §7 y [docs/resultados-calibracion.md](docs/resultados-calibracion.md)):
 
 ```powershell
 dwm ports                      # Lista las placas DWM3001CDK detectadas
 dwm info --port COM7           # STAT + DECAID + GETOTP + LISTCAL de una placa
-dwm validate --port COM7       # Corre la suite de validación de comandos y genera reporte
+dwm validate --port COM7 --second-port COM8
+                               # Corre la suite de validación de comandos y genera reporte
+                               # (--second-port es opcional; habilita el check de sesión TWR)
 dwm calibrate --initiator COM7 --responder COM8 --distance-m 2.00
-                               # Bucle de calibración automática del antenna delay
+                               # Bucle de calibración automática del antenna delay;
+                               # pide confirmación antes de escribir (saltear con --yes)
 dwm terminal --port COM7       # Terminal interactivo crudo contra la consola CLI
 ```
+
+Opciones globales (van antes del subcomando): `--verbose` (logging DEBUG en consola) y `--log-dir` (carpeta de logs, default `logs/`). La mayoría de los subcomandos acepta además `--config archivo.yaml` para fijar sus opciones en un archivo (precedencia: línea de comandos > YAML > valor por defecto); ver `dwm <subcomando> --help` para el detalle de cada uno.
 
 ## 5. Documentación
 
@@ -55,9 +60,12 @@ Toda la documentación está en [docs/](docs/README.md):
 
 | Documento | Contenido |
 |---|---|
-| [docs/README.md](docs/README.md) | Índice de la documentación |
+| [docs/README.md](docs/README.md) | Índice completo de la documentación |
 | [docs/arquitectura.md](docs/arquitectura.md) | Diseño del software: capas, módulos y responsabilidades |
 | [docs/plan-implementacion.md](docs/plan-implementacion.md) | Plan de implementación detallado, por fases, con criterios de aceptación |
+| [docs/resultados-validacion.md](docs/resultados-validacion.md) | Acta de la validación de comandos: 18/18 PASS contra hardware real |
+| [docs/resultados-calibracion.md](docs/resultados-calibracion.md) | Acta de la calibración de antenna delay: convergencia y persistencia verificadas |
+| [docs/referencia-comandos-fw110.md](docs/referencia-comandos-fw110.md) | Referencia de cada comando CLI con la respuesta **real** capturada del firmware |
 | [docs/referencias/](docs/referencias/README.md) | Guía verificada de CLI/calibración y documentos del fabricante (Qorvo) |
 | [CLAUDE.md](CLAUDE.md) | Contexto, reglas de programación y convenciones de Git del proyecto |
 
