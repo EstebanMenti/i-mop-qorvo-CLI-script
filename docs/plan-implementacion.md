@@ -26,7 +26,7 @@
 | F3 | Suite de validación de comandos + reportes | `feature/f3-validation` | F2 | ✅ Completada (PR #4) |
 | F4 | Muestreo TWR y calibración automática | `feature/f4-calibration` | F2 | ✅ Completada (PR #7) |
 | F5 | Aplicación de consola (`dwm …`) | `feature/f5-app` | F3, F4 | ✅ Completada (PR #14) |
-| F6 | Verificación con hardware real y cierre | `feature/f6-hardware-verification` | F5 | Pendiente |
+| F6 | Verificación con hardware real y cierre | `feature/f6-hardware-verification` | F5 | ✅ Completada |
 
 ---
 
@@ -277,17 +277,17 @@ Reglas transversales:
 
 Con las dos placas conectadas (esto lo ejecuta el usuario junto con la IA, no es automatizable a ciegas):
 
-1. `dwm ports` detecta ambas placas; anotar VID/PID reales observados y corregir `discovery.py` si difieren de lo previsto.
-2. Confirmar el terminador de línea real (`\r\n` vs `\r`) y el formato de entrada de `CALKEY` (decimal vs hex) con `dwm terminal`; corregir los `TODO(verificar-con-hardware)` de F1/F2.
-3. `dwm validate --port … --second-port …` con reporte completo; archivar el reporte como fixture de referencia en `tests/fixtures/` (sanitizado) y ajustar parsers si alguna salida real difiere de la guía. **Toda discrepancia entre la guía y el firmware real se documenta en `docs/referencias/guia-cli-calibracion-dwm3001cdk.md`** como nota fechada.
-4. Calibración real a distancia conocida (~2 m, guía §4.1): `dwm calibrate …`; verificar convergencia; ciclo de alimentación manual y `dwm info` para confirmar persistencia del delay (guía §4.3).
-5. Actualizar `README.md` (sección "Uso previsto" pasa a "Uso"), completar estados de fases en este plan y abrir PR final.
+1. ✅ `dwm ports` detecta ambas placas (VID Nordic `0x1915`, conector J20, confirmado automáticamente en F1). El VID de SEGGER (`0x1366`, conector J9) fue confirmado por el **usuario mediante validación manual propia** el 2026-08-10 (flasheo habitual de las placas por J9); no se ejercitó con `find_boards()` en este proyecto porque el banco de pruebas usó siempre J20. `discovery.py` no requirió correcciones.
+2. ✅ Terminador de línea confirmado `\r\n` (F1, 2026-08-06) y formato de entrada de `CALKEY` confirmado **decimal** (F3, 2026-08-06, sonda con `wifi_coex_time_gap`). Los `TODO(verificar-con-hardware)` correspondientes de F1/F2 quedaron resueltos y documentados con nota fechada en la guía.
+3. ✅ `dwm validate --port COM26 --second-port COM28` (2026-08-10, con la CLI final de F5): **18/18 PASS**, incluida la sesión TWR entre placas. Reporte archivado en `docs/validaciones/2026-08-10-validate-dwm-cli-final.{md,json}` — ver [resultados-validacion.md](resultados-validacion.md) §7. Los fixtures de referencia (`tests/fixtures/stat_fw110_real.txt`, `listcal_manual.txt`) ya se habían archivado en F2. Todas las discrepancias detectadas quedaron documentadas con nota fechada en la guía (seis en la campaña de F3, más las de notificaciones multilínea y `RANGE_DIAGNOSTICS_NTF`).
+4. ✅ Calibración real a 2,20 m (F4, 2026-08-06): `ant0.ch9.ant_delay` de COM28 convergió de 16371 a 16459 (error +36,1 cm → +1,3 cm); persistencia confirmada con ciclo de alimentación real — ver [resultados-calibracion.md](resultados-calibracion.md).
+5. ✅ `README.md` actualizado (sección "Uso previsto" → "Uso", con los comandos reales verificados); estados de fases completados en este plan; PR de cierre de F6.
 
 **Criterio de aceptación (Definition of Done del proyecto):**
 
-- Suite de validación en verde contra hardware real (o FAILs justificados y documentados).
-- Una calibración completa convergida y persistida, con reporte archivado.
-- `ruff`, `mypy --strict`, `pytest` en verde; documentación sincronizada.
+- ✅ Suite de validación en verde contra hardware real: 18/18 PASS, corrida el 2026-08-10 con la herramienta `dwm` terminada.
+- ✅ Una calibración completa convergida y persistida, con reporte archivado (F4, COM28).
+- ✅ `ruff`, `mypy --strict`, `pytest` en verde; documentación sincronizada (verificado en el cierre de F6).
 
 ---
 
