@@ -138,6 +138,7 @@ Es decir: **el protocolo FiRa/UCI sobre el que corre el firmware de este módulo
 # SDK/Tools/uwb-qorvo-tools/lib/uwb-uci/uci/qorvo_msg.py
 self.nlos = IsTrue(b.pop_uint(1))  # el byte SÍ se lee del paquete...
 
+
 # ...pero el método que imprime el resultado no lo usa: lo reemplaza por un
 # texto fijo, en todas las mediciones, sin excepción:
 def __str__(self) -> str:

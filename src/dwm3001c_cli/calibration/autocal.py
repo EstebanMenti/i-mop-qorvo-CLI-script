@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -87,11 +88,18 @@ def autocalibrate(
     real_distance_m: float,
     config: AutocalConfig | None = None,
     report_dir: Path = Path("reports"),
+    on_iteration: Callable[[CalibrationIteration], None] | None = None,
 ) -> CalibrationReport:
     """Calibra el retardo de antena de ``device`` contra ``reference``.
 
     ``device`` actúa de RESPF (es el que se modifica); ``reference`` de INITF
     y **no se toca**. Las mediciones se leen del initiator.
+
+    Args:
+        on_iteration: callback opcional invocado con cada :class:`CalibrationIteration`
+            apenas se completa su medición (antes de decidir la próxima corrección);
+            permite mostrar progreso en vivo (p. ej. la CLI, plan §7) sin acoplar
+            este módulo a ninguna capa de presentación.
 
     Raises:
         CalibrationError: enlace pobre, sensibilidad no medible, salvaguarda
@@ -142,6 +150,8 @@ def autocalibrate(
             stats.mean_cm,
             error,
         )
+        if on_iteration is not None:
+            on_iteration(iterations[-1])
         return error, stats
 
     try:
