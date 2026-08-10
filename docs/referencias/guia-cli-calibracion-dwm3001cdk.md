@@ -52,6 +52,8 @@ En el SDK para DWM3001CDK existen **dos interfaces de comunicación**:
 
 > **Corrección importante.** El UART por pines **no requiere recompilar el firmware**: se habilita desde la propia consola con el comando `UART 1` (secc. 7.5.2, pág. 46). La única excepción es que el comando `UART` **no está disponible si se removió el flag de compilación `USB_ENABLE`** del proyecto.
 
+> **[Nota 2026-08-10 — verificado contra el código fuente del SDK]** `UART 0`/`UART 1` no habilita una segunda salida en paralelo: **conmuta cuál de las dos interfaces recibe las respuestas del firmware**, de forma mutuamente excluyente (`flush_report_buf()` en `Src/Apps/Src/common/usb_uart/usb_uart_tx.c`, un `if/else` entre transmitir por UART o por USB). Enviar `UART 1` a una placa conectada solo por USB (como en este proyecto) hace que deje de responder **por completo** por ese medio — sin ningún byte, ni a nivel serie crudo — hasta enviar `UART 0` por los pines físicos. Por eso `dwm3001c_cli` nunca ejecuta la escritura de esta clave (ver [referencia-comandos-fw110.md](../referencia-comandos-fw110.md) §3.1).
+
 **Parámetros del terminal serie** (secc. 7.2, pág. 37):
 
 | Parámetro | Valor |
