@@ -1,7 +1,8 @@
 # Referencia de comandos CLI — respuestas reales del firmware 1.1.0
 
 > **Propósito:** documentar cada comando admitido por el firmware CLI del DWM3001CDK con la **respuesta real capturada de la placa**, como complemento verificado de la [guía de referencia](referencias/guia-cli-calibracion-dwm3001cdk.md) (que sigue el manual del fabricante).
-> **Alcance:** firmware **1.1.0** (build 13/08/2025, `DW3_QM33_SDK - FreeRTOS`). Capturas del 2026-08-06 sobre la placa serie `F55EA0AF0AC4` (COM26), obtenidas con la herramienta de este proyecto. `RESTORE` **no se ejecutó** (destructivo); de él solo se muestra la ayuda.
+> **Alcance:** firmware **1.1.0** (build 13/08/2025, `DW3_QM33_SDK - FreeRTOS`, **oficial, sin modificar** — QM33SDK-1.1.1 tal como lo distribuye Qorvo). Capturas del 2026-08-06 sobre la placa serie `F55EA0AF0AC4` (COM26), obtenidas con la herramienta de este proyecto. `RESTORE` **no se ejecutó** (destructivo); de él solo se muestra la ayuda.
+> **Excepción de alcance — §0.1:** esa sección documenta además el comportamiento de una **variante de firmware modificada por el equipo del proyecto** (mismo `1.1.0` de base, builds `10/08/2026`), con un fix de transporte UART que **no existe en el firmware oficial de Qorvo**. Está marcada explícitamente para que, al comparar contra el Developer Manual o contra un DWM3001CDK de fábrica, quede claro qué es comportamiento de fábrica y qué es una modificación local.
 
 ---
 
@@ -18,12 +19,41 @@
 
 > **Todo lo anterior corresponde al bridge USB del conector J20** (el que usa este proyecto). El resto del documento asume ese camino salvo que se indique lo contrario.
 
-### 0.1 Conector J9 (bridge UART del J-Link) — verificado 2026-08-10, solo diagnóstico
+### 0.1 UART físico (conector J9 / adaptador dedicado) — historial de verificación, incluye una modificación de firmware
 
-El chip J-Link de a bordo también expone un puerto COM (`JLink CDC UART Port`, VID SEGGER `0x1366`) que bridgea el mismo UART físico que habilita el comando `UART 1` (§3.1). Probado puntualmente para diagnóstico, **no es un camino soportado por esta herramienta**:
+El chip J-Link de a bordo expone un puerto COM (`JLink CDC UART Port`, VID SEGGER `0x1366`, conector **J9**) que bridgea el mismo UART físico que habilita el comando `UART 1` (§3.1). Ese mismo UART también es accesible cableando un **adaptador USB-UART dedicado** directo a los pines TX/RX/GND del header (sin pasar por el J-Link) — es el escenario real de este apartado: un microcontrolador externo controlando la placa por esos pines, sin USB.
 
-- **Comandos con respuesta chica** (`STAT`, `DECAID`): funcionan correctamente. El eco del comando llega **pegado sin separador** al comienzo de la primera línea de respuesta (p. ej. `"STAT\rJS0109{...}"`, con `\r` pero sin `\n` entre medio) — a diferencia de J20, donde el eco siempre es su propia línea. `DwmCliClient.send_command()` lo detecta y recorta correctamente (verificado con hardware real).
-- **Comandos con respuesta grande** (`LISTCAL`, 259 líneas; `GETOTP`, 131 líneas): el contenido **llega corrompido** pasado cierto punto (bytes perdidos/mezclados, patrón compatible con overrun de buffer — no hay control de flujo por hardware en la configuración de puerto de este proyecto). No es un problema de parseo: los bytes ya llegan mal a la PC. **No se intentó corregir** — aceptar esos datos igual sería peligroso (podría interpretarse una calibración corrompida como válida). Si en el futuro se necesitara este camino de forma confiable, habría que investigar control de flujo por hardware (RTS/CTS) o una tasa de baudios menor; queda fuera del alcance actual del proyecto, que usa J20 como única interfaz soportada.
+Los comandos de **respuesta chica** (`STAT`, `DECAID`, `THREAD`, `HELP`, `LCFG`, consultas de `UART`/`DIAG`) funcionaron bien desde la primera prueba, por cualquiera de los dos caminos. Único ajuste de software que hizo falta (no de firmware): el eco del comando llega **pegado sin separador** al comienzo de la primera línea de respuesta por este UART (p. ej. `"STAT\rJS0109{...}"`, con `\r` pero sin `\n` entre medio) — a diferencia de J20/USB, donde el eco siempre es su propia línea. `DwmCliClient.send_command()` lo detecta y recorta correctamente (verificado con hardware real, sin tocar firmware).
+
+Los comandos de **respuesta grande** (`LISTCAL`, `GETOTP`) y el **streaming continuo** (`SESSION_INFO_NTF` durante una sesión de ranging) sí requirieron una modificación de firmware. Historial completo:
+
+#### ANTES del parche — firmware oficial QM33SDK-1.1.1 sin modificar (builds `13/08/2025` y, funcionalmente igual, el primer intento de parche `10/08/2026 14:34:58`)
+
+| Comando / escenario | Resultado |
+|---|---|
+| `LISTCAL` (259 líneas esperadas) | ❌ Corrupto: bytes perdidos/mezclados a partir de cierto punto, en **cualquier** adaptador probado (bridge J-Link **y** adaptador USB-UART dedicado Silicon Labs CP210x — mismo patrón byte a byte en ambos, lo que descartó al adaptador como causa) |
+| `GETOTP` (131 líneas esperadas) | ❌ Corrupto: solo ~26 líneas llegaban bien antes de degradarse |
+| `SESSION_INFO_NTF` en streaming | No probado en este estado (se dio por descontado que fallaría, dado lo anterior) |
+
+**Causa raíz identificada** (código fuente del SDK oficial, sin modificar): `FlushTask` (`flushTask.c`) vacía el buffer de reporte cada 5 ms, hasta 64 bytes por ciclo (~12,8 KB/s de intento), contra un enlace de 115200 baudios que solo drena ~11,5 KB/s. Cuando el FIFO de transmisión de 512 bytes (`HAL_uart.c`) se llena, `app_uart_put()` (driver Nordic) devuelve error sin esperar, `deca_uart_transmit()` corta el envío ahí mismo, y `flush_report_buf()` (`usb_uart_tx.c`) — a diferencia de su rama USB, que sí reintenta — **no revierte el puntero de lectura en la rama UART**, perdiendo esos bytes para siempre. Detalle completo en el prompt de especificación que se le pasó al equipo de firmware (`prompt-fix-firmware-uart.md`, fuera de este repositorio).
+
+#### DESPUÉS del parche — firmware **modificado** (build `10/08/2026 16:03:38`) ⚠️ no es firmware de fábrica
+
+| Comando / escenario | Resultado |
+|---|---|
+| `LISTCAL` (259 líneas) | ✅ **10/10 repeticiones limpias**, sin corrupción, vía adaptador USB-UART dedicado en los pines físicos |
+| `GETOTP` (131 líneas) | ✅ **10/10 repeticiones limpias**, 0 líneas corruptas |
+| `SESSION_INFO_NTF` en streaming (sesión TWR real de 15 s) | ✅ 75 notificaciones recibidas por UART, 74 `SUCCESS`, **0 warnings de corrupción** |
+
+**Qué se modificó:** el equipo de firmware confirmó que aplicó el fix de transporte (el rollback del puntero de lectura en la rama UART de `flush_report_buf()`, espejando la rama USB) descripto en `prompt-fix-firmware-uart.md`. Como `LISTCAL` sigue devolviendo el set completo de 259 claves (no una versión reducida), el cambio parece ser puramente de transporte — no se agregó ningún comando nuevo ni se recortó el contenido de las respuestas existentes.
+
+> **Importante para quien compare esto contra la documentación oficial de Qorvo:** este comportamiento corregido **no es de fábrica**. Un DWM3001CDK con el firmware `QM33SDK-1.1.1` oficial, sin modificar, va a mostrar la corrupción descripta en "ANTES" al transmitir respuestas grandes por UART físico. El fix es específico de la copia de firmware de este proyecto.
+
+**Alcance de la verificación (qué se probó y qué no):**
+
+- ✅ Confirmado con un **adaptador USB-UART dedicado** (Silicon Labs CP210x) cableado directo a los pines TX/RX/GND — el escenario real de un microcontrolador externo.
+- ❔ **No** se volvió a probar puntualmente por el **bridge J9 del J-Link** con este build corregido (sí se había probado, con corrupción, en el estado "antes"). La corrección ocurre en el firmware del propio Qorvo, antes de que los bytes lleguen a cualquier bridge — debería aplicar igual por J9 — pero queda sin confirmar empíricamente con el build nuevo.
+- ❔ No probado: ráfagas mucho más grandes o sostenidas por más tiempo que las de esta prueba (15 s), ni con ambas placas transmitiendo simultáneamente por UART (acá solo una de las dos placas — la que hacía de INITF — estaba conectada por UART; la otra seguía por USB).
 
 ## 1. Anytime commands (ejecutables en cualquier momento)
 
