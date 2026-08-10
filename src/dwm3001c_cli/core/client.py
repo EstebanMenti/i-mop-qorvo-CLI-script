@@ -163,14 +163,26 @@ class DwmCliClient:
         Fin de respuesta: línea ``ok`` (marcador del firmware) o ``quiet_period_s``
         sin líneas nuevas tras haber recibido algo. El eco del comando se descarta.
 
+        [Verificado 2026-08-10, bridge UART de J9] Por USB (J20) el eco llega
+        siempre como línea propia. Por el bridge UART de J9, el eco puede llegar
+        **pegado sin separador** al comienzo de la primera línea de respuesta
+        (p. ej. ``"STAT\\rJS0109{...}"``, sin ``\\n`` entre medio, pero con un
+        carácter de control justo después del texto del comando). Se detecta y
+        recorta ese eco pegado sin tocar respuestas que casualmente empiezan
+        con la misma palabra que el comando sin separador (p. ej. ``DIAG`` →
+        ``"DIAG: 0"``, donde ``:`` sigue inmediatamente, sin espacio de por
+        medio: eso es contenido real, no eco).
+
         Raises:
             CommandTimeoutError: si no llegó ninguna línea dentro del timeout.
         """
         limit = timeout_s if timeout_s is not None else self._command_timeout_s
+        cmd_upper = cmd.strip().upper()
         self._transport.write_line(cmd)
         deadline = time.monotonic() + limit
         lines: list[str] = []
         received_any = False
+        echo_checked = False
         while True:
             line = self._transport.read_line(quiet_period_s)
             if line is None:
@@ -180,11 +192,33 @@ class DwmCliClient:
                     raise CommandTimeoutError(self.name, cmd, limit)
                 continue
             stripped = line.strip()
-            if not received_any and stripped.upper() == cmd.strip().upper():
+            if not echo_checked:
+                if stripped == "":
+                    # Línea vacía antes de cualquier contenido real (frecuente
+                    # como residuo entre comandos): se ignora sin contar para
+                    # el timeout ni para la detección de eco.
+                    continue
+                echo_checked = True
                 received_any = True
-                logger.debug("Eco descartado en %s: %s", self.name, line)
-                continue
-            received_any = True
+                if stripped.upper() == cmd_upper:
+                    logger.debug("Eco descartado en %s: %s", self.name, line)
+                    continue
+                after_cmd = (
+                    stripped[len(cmd_upper) :] if stripped.upper().startswith(cmd_upper) else None
+                )
+                # Eco pegado sin separador solo si justo después del texto del
+                # comando hay un carácter de espacio/control (o nada): si sigue
+                # un carácter de contenido (p.ej. ":") no es eco, es respuesta
+                # real que empieza igual que el comando (guía: "DIAG" -> "DIAG: 0").
+                if after_cmd is not None and (after_cmd == "" or after_cmd[0].isspace()):
+                    remainder = after_cmd.lstrip()
+                    logger.debug("Eco pegado a la respuesta en %s: %s", self.name, line)
+                    if not remainder:
+                        continue
+                    stripped = remainder
+                    line = remainder
+            else:
+                received_any = True
             lines.append(line)
             # "ok" y "KO" son los marcadores de fin de respuesta del firmware
             # (éxito y error respectivamente; el KO se observó en fw 1.1.0).
