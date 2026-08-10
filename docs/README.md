@@ -16,6 +16,7 @@
 | [resultados-validacion.md](resultados-validacion.md) | Acta de la campaña de validación de comandos (fw 1.1.0): resultado 18/18, hallazgos de firmware y evidencia archivada en [validaciones/](validaciones/) | Todos |
 | [resultados-calibracion.md](resultados-calibracion.md) | Acta de la calibración de antenna delay: COM28 de +36 cm a +1,3 cm de error, persistencia verificada, sensibilidad real medida | Todos |
 | [referencia-comandos-fw110.md](referencia-comandos-fw110.md) | Referencia de todos los comandos CLI con las **respuestas reales** capturadas del firmware 1.1.0 (ayudas, salidas, notificaciones, tabla resumen) | Todos |
+| [teoria-multipath-nlos.md](teoria-multipath-nlos.md) | Documento teórico: cómo el ranging UWB tolera el multipath (CIR, detección del primer camino), por qué falla en NLOS, y por qué **el protocolo FiRa define un indicador de NLOS que el stack de Qorvo no implementa** — verificado contra el código del SDK | Todos |
 
 ## 2. Documentos de referencia (fabricante)
 

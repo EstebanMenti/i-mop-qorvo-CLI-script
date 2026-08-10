@@ -422,6 +422,8 @@ RANGE_DIAGNOSTICS_NTF: {n_reports=6
 
 ### 5.4 Rebotes de señal (multipath / NLOS): qué detecta la tecnología y qué expone el CLI
 
+> **Ver también:** [teoria-multipath-nlos.md](teoria-multipath-nlos.md) — desarrollo teórico completo (CIR, detección del primer camino, por qué el protocolo FiRa define un indicador de NLOS que Qorvo no implementa, y las técnicas de detección a nivel de host).
+
 > **[Fuera del manual]** Fundamento: el receptor UWB estima la distancia a partir del tiempo de vuelo del **primer camino detectable** en la respuesta al impulso del canal (CIR). Por eso el ranging es robusto a los rebotes *mientras exista línea de vista*: los ecos llegan después y no corren la medición. El problema es el caso **NLOS** (camino directo bloqueado): el "primer camino" que detecta el chip es un rebote, y la distancia se **sobreestima siempre** (el camino reflejado es más largo). Un rebote nunca acorta la medición.
 
 **Qué expone el firmware CLI 1.1.0:**
