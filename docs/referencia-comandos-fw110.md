@@ -206,7 +206,9 @@ UART: 0
 ok
 ```
 
-> La escritura `UART 0/1` existe (`HELP UART`: *"To initialize selected UART: UART <DEC>"*) pero **no se ejercita desde esta herramienta**: deshabilitar el USB por error dejaría la consola inaccesible.
+> **La placa tiene dos interfaces físicas de consola:** el adaptador USB integrado (USB CDC ACM — el que usa esta herramienta) y un **UART por pines** independiente, deshabilitado por defecto (guía §1.2). El comando `UART <DEC>` (`HELP UART`: *"To initialize selected UART: UART <DEC>"*) no agrega una segunda salida: **conmuta cuál de las dos interfaces recibe todas las respuestas del firmware**, `ok` incluido.
+>
+> **[Verificado 2026-08-10 contra el código fuente del SDK]** `flush_report_buf()` (`Src/Apps/Src/common/usb_uart/usb_uart_tx.c`) decide el destino de cada respuesta con un `if (is_uart_allowed()) { … UART … } else { … USB … }` — mutuamente excluyente, nunca ambas a la vez. Por eso **no se ejercita `UART 1` desde esta herramienta**: como el enlace con las placas es siempre por USB, tras `UART 1` el firmware seguiría ejecutando comandos con normalidad pero dejaría de responder **por completo** por USB (sin ningún byte, ni siquiera a nivel serie crudo) hasta que alguien enviara `UART 0` a través de los pines físicos — algo que esta herramienta no puede hacer. El síntoma sería indistinguible de una placa colgada.
 
 ### 3.2 `CALKEY`
 
@@ -464,7 +466,7 @@ La variación entre tramas consecutivas es normal en interiores (personas, muebl
 | `LISTENER` | NONE | `ok` | Chip no-AoA: sin PDoA; reporta `rsl`/`fsl` por trama (indicador de multipath, §5.4) |
 | `LSTAT` | LISTENER activo | `ok` | JSON de eventos RX |
 | `INITF` / `RESPF` | NONE | `ok` | Vuelca los parámetros FiRa; luego notificaciones |
-| `UART` | NONE | `ok` | Solo consulta desde esta herramienta |
+| `UART` | NONE | `ok` | Solo consulta desde esta herramienta; la escritura conmuta USB↔pines (§3.1) — nunca ejecutada por USB |
 | `CALKEY <key>` | NONE | **`KO`** | **Lectura rota** — usar LISTCAL |
 | `CALKEY <key> <val>` | NONE | `ok` | Escritura OK; entrada **decimal**; responde el valor nuevo |
 | `LISTCAL` | NONE | `ok` | 259 claves |
