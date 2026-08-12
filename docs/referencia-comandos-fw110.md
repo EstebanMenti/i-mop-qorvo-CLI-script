@@ -52,8 +52,8 @@ Los comandos de **respuesta grande** (`LISTCAL`, `GETOTP`) y el **streaming cont
 **Alcance de la verificación (qué se probó y qué no):**
 
 - ✅ Confirmado con un **adaptador USB-UART dedicado** (Silicon Labs CP210x) cableado directo a los pines TX/RX/GND — el escenario real de un microcontrolador externo.
-- ❔ **No** se volvió a probar puntualmente por el **bridge J9 del J-Link** con este build corregido (sí se había probado, con corrupción, en el estado "antes"). La corrección ocurre en el firmware del propio Qorvo, antes de que los bytes lleguen a cualquier bridge — debería aplicar igual por J9 — pero queda sin confirmar empíricamente con el build nuevo.
-- ❔ No probado: ráfagas mucho más grandes o sostenidas por más tiempo que las de esta prueba (15 s), ni con ambas placas transmitiendo simultáneamente por UART (acá solo una de las dos placas — la que hacía de INITF — estaba conectada por UART; la otra seguía por USB).
+- ✅ **Confirmado también por el bridge J9 del J-Link** (2026-08-12, COM23, una tercera placa distinta — serie `000760222700`, Part ID `0xdeca...4ec4950e` — con el mismo build `10/08/2026 16:03:38`): `LISTCAL` (259 claves) y `GETOTP` (131 líneas) llegaron íntegros, sin corrupción. Cierra el punto que había quedado pendiente: la corrección aplica por cualquiera de los dos caminos, tal como se esperaba (ocurre en el firmware del Qorvo, antes de que los bytes lleguen a cualquier bridge).
+- ❔ No probado: ráfagas mucho más grandes o sostenidas por más tiempo que las de la prueba original (15 s), ni con ambas placas transmitiendo simultáneamente por UART (en esa prueba solo una de las dos placas — la que hacía de INITF — estaba conectada por UART; la otra seguía por USB).
 
 ## 1. Anytime commands (ejecutables en cualquier momento)
 
