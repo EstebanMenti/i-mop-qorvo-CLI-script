@@ -110,6 +110,47 @@ class TestInfo:
         assert "ant0.ch9.ant_delay" in result.stdout
 
 
+class TestBleProvision:
+    def test_missing_port_exits_2(self) -> None:
+        result = runner.invoke(cli_module.app, ["ble-provision"])
+
+        assert result.exit_code == 2
+
+    def test_declined_confirmation_does_not_write(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        link = FakeLink("COM7", basic_script())
+        link.queue_response("UART", ["UART: 0"])
+        patch_links(monkeypatch, {"COM7": link})
+
+        result = runner.invoke(cli_module.app, ["ble-provision", "--port", "COM7"], input="n\n")
+
+        assert result.exit_code == 1
+        assert "cancelado" in result.stdout
+        assert "UART 1" not in link.sent
+
+    def test_yes_skips_confirmation_and_enables_uart(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        link = FakeLink("COM7", basic_script())
+        link.queue_response("UART", ["UART: 0"])
+        link.queue_response("UART 1", ["ok"])
+        link.queue_response("SAVE", ["ok"])
+        link.queue_response("UART", ["UART: 1"])
+        patch_links(monkeypatch, {"COM7": link})
+
+        result = runner.invoke(cli_module.app, ["ble-provision", "--port", "COM7", "--yes"])
+
+        assert result.exit_code == 0
+        assert link.sent == ["STOP", "STAT", "UART", "UART 1", "SAVE", "UART"]
+
+    def test_uart_1_rejected_exits_1(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        link = FakeLink("COM7", basic_script())
+        link.queue_response("UART", ["UART: 0"])
+        link.queue_response("UART 1", ["KO"])
+        patch_links(monkeypatch, {"COM7": link})
+
+        result = runner.invoke(cli_module.app, ["ble-provision", "--port", "COM7", "--yes"])
+
+        assert result.exit_code == 1
+
+
 class TestValidate:
     def test_missing_port_exits_2(self) -> None:
         result = runner.invoke(cli_module.app, ["validate"])

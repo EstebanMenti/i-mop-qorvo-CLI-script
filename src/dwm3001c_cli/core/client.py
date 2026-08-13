@@ -355,6 +355,23 @@ class DwmCliClient:
         deshabilitar el USB por error dejaría la consola inaccesible."""
         return self.send_command("UART")
 
+    def enable_uart_output(self) -> None:
+        """``UART 1``: habilita la salida UART física (requiere ``SAVE`` para persistir).
+
+        Deliberadamente no acepta parámetro: a diferencia de :meth:`uart_status`,
+        que solo consulta, este método puede escribir — pero únicamente la
+        variante que **habilita**. Nunca debe poder enviarse ``UART 0`` desde
+        código automatizado, porque deshabilitar la salida USB por error
+        dejaría la consola inaccesible (mismo motivo documentado en
+        :meth:`uart_status`; CLAUDE.md §2.2: ninguna función debe escribir
+        configuración sin que eso sea su propósito explícito y esté a la vista
+        en su nombre). Uso previsto: habilitar el puente UART hacia un puente
+        Bluetooth externo (rama ``hardware/ble-bridge-nrf52840``).
+        """
+        lines = self.send_command("UART 1")
+        if not is_ok(lines):
+            raise CommandRejectedError(f"{self.name}: UART 1 no confirmó ok; respuesta: {lines!r}")
+
     def lcfg(self) -> list[str]:
         """``LCFG``: configuración cruda de la aplicación LISTENER (guía §2.2)."""
         return self.send_command("LCFG")

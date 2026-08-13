@@ -163,6 +163,45 @@ def info(
     logger.debug("GETOTP crudo:\n%s", "\n".join(otp_lines))
 
 
+# ------------------------------------------------------------- ble-provision
+
+
+@app.command(name="ble-provision")
+def ble_provision(
+    port: Annotated[
+        str, typer.Option("--port", help="Puerto USB del Qorvo a habilitar para el puente BLE.")
+    ],
+    yes: Annotated[bool, typer.Option("--yes", help="Saltea la confirmación interactiva.")] = False,
+) -> None:
+    """Habilita, una única vez, la salida UART física del Qorvo (``UART 1`` + ``SAVE``).
+
+    Paso previo obligatorio para usar el Qorvo como RESPONDER a través de un
+    puente Bluetooth nRF52840 (rama ``hardware/ble-bridge-nrf52840``, ver
+    ``docs/rama-hardware-ble.md``): de fábrica el Qorvo solo responde por USB,
+    y el puente le habla por UART física.
+    """
+    with _error_boundary(), SerialLink(port) as link:
+        client = DwmCliClient(link)
+        client.ensure_mode_none()
+        before = client.uart_status()
+        console.print(f"[dim]UART actual en {port}:[/] {' '.join(before)}")
+
+        if not yes:
+            confirmed = typer.confirm(
+                f"Se va a habilitar UART 1 y SAVE en {port} (paso permanente, "
+                "solo se puede deshacer con RESTORE). ¿Continuar?"
+            )
+            if not confirmed:
+                console.print("Provisioning cancelado por el usuario.")
+                raise typer.Exit(code=1)
+
+        client.enable_uart_output()
+        client.save()
+        after = client.uart_status()
+
+    console.print(f"[bold green]UART habilitada y guardada en {port}:[/] {' '.join(after)}")
+
+
 # ------------------------------------------------------------------ validate
 
 

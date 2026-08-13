@@ -104,7 +104,7 @@ Las ramas cortas de trabajo dentro de esta rama siguen la convención habitual
 
 | Fase | Contenido | Estado |
 |---|---|---|
-| F7 | `dwm ble-provision`: habilita `UART 1` + `SAVE` en el Qorvo del lado BLE (por USB) | pendiente |
+| F7 | `dwm ble-provision`: habilita `UART 1` + `SAVE` en el Qorvo del lado BLE (por USB) | implementado (sin hardware); pendiente F10 |
 | F8 | `transport/ble_link.py` (`BleTransport` sobre Nordic UART Service vía `bleak`), `transport/ble_discovery.py`, wiring en `app/cli.py` | pendiente |
 | F9 | GUI de escritorio PySide6 (`src/dwm3001c_cli/gui/`): conexión, terminal manual, validación y calibración con gráfico en vivo | pendiente |
 | F10 | Verificación end-to-end contra hardware real; resolución de los riesgos de la §8 | pendiente |
