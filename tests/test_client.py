@@ -237,6 +237,19 @@ class TestServiceCommands:
 
         assert transport.sent == ["SETAPP NONE"]
 
+    def test_enable_uart_output_sends_uart_1(self) -> None:
+        client, transport = make_client({"UART 1": ["ok"]})
+
+        client.enable_uart_output()
+
+        assert transport.sent == ["UART 1"]
+
+    def test_enable_uart_output_requires_ok(self) -> None:
+        client, _ = make_client({"UART 1": ["KO"]})
+
+        with pytest.raises(CommandRejectedError, match="UART 1"):
+            client.enable_uart_output()
+
     def test_decaid_parses(self) -> None:
         client, _ = make_client(
             {
