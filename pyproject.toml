@@ -24,6 +24,13 @@ dev = [
     "types-pyyaml",
     "types-pyserial",
 ]
+# Solo necesario en la rama hardware/ble-bridge-nrf52840 (responder por puente
+# Bluetooth nRF52840): quien use dwm3001c-cli con dos placas por USB (main) no
+# necesita instalar Bluetooth. bleak>=3.0 confirmado contra hardware real
+# (2026-08-13, Windows 11/WinRT, ver docs/rama-hardware-ble.md).
+ble = [
+    "bleak>=3.0",
+]
 
 [project.scripts]
 dwm = "dwm3001c_cli.app.cli:main"

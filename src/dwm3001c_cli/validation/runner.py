@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 
 from dwm3001c_cli.core.client import DwmCliClient
 from dwm3001c_cli.core.models import ValidationResult
@@ -25,6 +25,7 @@ def run_validation(
     settle_delay_s: float = 3.0,
     ranging_window_s: float = 10.0,
     check_ids: Collection[str] | None = None,
+    on_result: Callable[[ValidationResult], None] | None = None,
 ) -> list[ValidationResult]:
     """Corre la suite (o un subconjunto por ``check_ids``) y devuelve los resultados.
 
@@ -34,6 +35,11 @@ def run_validation(
         settle_delay_s: espera tras arrancar una aplicación antes de verificarla.
         ranging_window_s: ventana de escucha de notificaciones en C4.
         check_ids: si se indica, solo se ejecutan esos IDs (p. ej. ``{"A3", "C4"}``).
+        on_result: si se indica, se llama con cada :class:`ValidationResult` a
+            medida que se completa (incluidos los SKIP) — para mostrar
+            progreso en vivo en una interfaz gráfica (rama
+            ``hardware/ble-bridge-nrf52840``), sin acoplar este módulo a Rich
+            ni a Qt.
     """
     context = CheckContext(
         client=client,
@@ -49,16 +55,17 @@ def run_validation(
             continue
         if check.needs_second_board and second_client is None:
             logger.info("%s: SKIP (requiere segunda placa)", check.check_id)
-            results.append(
-                ValidationResult(
-                    command=check.command,
-                    sent=check.sent,
-                    passed=True,
-                    detail="SKIP: requiere una segunda placa conectada",
-                    response_lines=(),
-                    duration_s=0.0,
-                )
+            result = ValidationResult(
+                command=check.command,
+                sent=check.sent,
+                passed=True,
+                detail="SKIP: requiere una segunda placa conectada",
+                response_lines=(),
+                duration_s=0.0,
             )
+            results.append(result)
+            if on_result is not None:
+                on_result(result)
             continue
 
         logger.info("%s: ejecutando %s", check.check_id, check.sent)
@@ -83,14 +90,15 @@ def run_validation(
                 except Exception:
                     logger.exception("%s: la limpieza falló", check.check_id)
 
-        results.append(
-            ValidationResult(
-                command=check.command,
-                sent=check.sent,
-                passed=passed,
-                detail=detail,
-                response_lines=tuple(lines),
-                duration_s=time.monotonic() - start,
-            )
+        result = ValidationResult(
+            command=check.command,
+            sent=check.sent,
+            passed=passed,
+            detail=detail,
+            response_lines=tuple(lines),
+            duration_s=time.monotonic() - start,
         )
+        results.append(result)
+        if on_result is not None:
+            on_result(result)
     return results
