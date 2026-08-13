@@ -18,6 +18,7 @@
 | [referencia-comandos-fw110.md](referencia-comandos-fw110.md) | Referencia de todos los comandos CLI con las **respuestas reales** capturadas del firmware 1.1.0 (ayudas, salidas, notificaciones, tabla resumen). §0.1 documenta además un **fix de firmware modificado** (no oficial) que resolvió la corrupción de datos por UART físico — antes/después con evidencia | Todos |
 | [teoria-multipath-nlos.md](teoria-multipath-nlos.md) | Documento teórico: cómo el ranging UWB tolera el multipath (CIR, detección del primer camino), por qué falla en NLOS, la diferencia entre las interfaces **CLI y UCI** del mismo stack, y por qué **el protocolo FiRa/UCI define un indicador de NLOS que el stack de Qorvo no calcula** — verificado contra el código fuente y la documentación oficial del SDK (`SDK/`) | Todos |
 | [rama-hardware-ble.md](rama-hardware-ble.md) | **Solo en la rama `hardware/ble-bridge-nrf52840`** (no existe en `main`): RESPONDER por puente Bluetooth nRF52840 y GUI de escritorio — propósito de la rama, hardware, setup, sincronización con `main` y fases de implementación | Desarrolladores / IA |
+| [resultados-verificacion-ble.md](resultados-verificacion-ble.md) | **Solo en la rama `hardware/ble-bridge-nrf52840`**: acta de la campaña de verificación F10 contra hardware real — comandos, integridad de respuestas largas, sesión TWR real (50/50), y el hallazgo crítico que bloquea recalibración/direccionamiento remoto por BLE (`CALKEY`/`RESPF` con parámetros no responden de forma confiable) | Todos |
 
 ## 2. Documentos de referencia (fabricante)
 

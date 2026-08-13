@@ -78,6 +78,31 @@ class TestWriteLine:
             assert client.is_connected
             assert b"qorvo STAT\n" in client.sent
 
+    def test_resets_leftover_partial_line_before_new_command(self) -> None:
+        # [Bug real, 2026-08-13] Una notificación BLE perdida (Notify no
+        # tiene ACK/retry) puede dejar un fragmento sin "\n" de cierre
+        # colgado en el buffer para siempre. Confirmado con hardware real:
+        # ese fragmento reaparecía pegado a la respuesta de un comando
+        # totalmente distinto, minutos después. write_line() debe descartar
+        # cualquier resto antes de mandar el siguiente comando.
+        fake = FakeBleakClient(ADDRESS)
+        fake.script["STAT"] = [b"stat\r\nJS0109{}\r\n\r\nok\r\n"]
+        transport, client = make_transport(fake)
+
+        with transport:
+            # Simula el eco truncado de un comando anterior que perdio su
+            # notificacion de cierre: llega sin "\n", queda a medio terminar.
+            assert client._notify_callback is not None
+            client._notify_callback(None, bytearray(b"CALKEY leftover_sin_cierre"))
+
+            transport.write_line("STAT")
+            lines: list[str] = []
+            while (line := transport.read_line(0.2)) is not None:
+                lines.append(line)
+
+        assert "leftover_sin_cierre" not in " ".join(lines)
+        assert lines == ["stat", "JS0109{}", "", "ok"]
+
 
 class TestReadLine:
     def test_reassembles_fragments_and_filters_shell_prompt(self) -> None:
