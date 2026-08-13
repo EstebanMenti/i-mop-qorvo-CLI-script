@@ -173,12 +173,19 @@ def ble_provision(
     ],
     yes: Annotated[bool, typer.Option("--yes", help="Saltea la confirmación interactiva.")] = False,
 ) -> None:
-    """Habilita, una única vez, la salida UART física del Qorvo (``UART 1`` + ``SAVE``).
+    """Conmuta, una única vez, la consola del Qorvo de USB a los pines UART físicos.
 
     Paso previo obligatorio para usar el Qorvo como RESPONDER a través de un
     puente Bluetooth nRF52840 (rama ``hardware/ble-bridge-nrf52840``, ver
     ``docs/rama-hardware-ble.md``): de fábrica el Qorvo solo responde por USB,
     y el puente le habla por UART física.
+
+    ``UART 1`` no agrega una segunda salida: **conmuta** cuál interfaz recibe
+    la consola (``docs/referencia-comandos-fw110.md`` §3.1). Tras este comando
+    (con ``SAVE``), **la placa deja de responder por el mismo puerto USB usado
+    para invocarlo**, de forma persistente a través de reinicios. Ejecutarlo
+    solo sobre una placa que de ahí en más se va a usar exclusivamente por los
+    pines UART (cableada al puente Bluetooth), nunca sobre la placa INITIATOR.
     """
     with _error_boundary(), SerialLink(port) as link:
         client = DwmCliClient(link)
@@ -188,8 +195,11 @@ def ble_provision(
 
         if not yes:
             confirmed = typer.confirm(
-                f"Se va a habilitar UART 1 y SAVE en {port} (paso permanente, "
-                "solo se puede deshacer con RESTORE). ¿Continuar?"
+                f"Se va a conmutar la consola de {port} de USB a los pines UART "
+                "(UART 1 + SAVE) — esta placa DEJARÁ DE RESPONDER por este mismo "
+                "puerto USB, de forma persistente a través de reinicios. Revertirlo "
+                "requiere acceso físico a los pines UART; el efecto de RESTORE sobre "
+                "esto no está verificado. ¿Continuar?"
             )
             if not confirmed:
                 console.print("Provisioning cancelado por el usuario.")

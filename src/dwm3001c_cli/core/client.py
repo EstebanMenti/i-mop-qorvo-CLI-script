@@ -356,17 +356,27 @@ class DwmCliClient:
         return self.send_command("UART")
 
     def enable_uart_output(self) -> None:
-        """``UART 1``: habilita la salida UART física (requiere ``SAVE`` para persistir).
+        """``UART 1``: conmuta la consola del firmware a los pines UART físicos.
 
-        Deliberadamente no acepta parámetro: a diferencia de :meth:`uart_status`,
-        que solo consulta, este método puede escribir — pero únicamente la
-        variante que **habilita**. Nunca debe poder enviarse ``UART 0`` desde
-        código automatizado, porque deshabilitar la salida USB por error
-        dejaría la consola inaccesible (mismo motivo documentado en
-        :meth:`uart_status`; CLAUDE.md §2.2: ninguna función debe escribir
-        configuración sin que eso sea su propósito explícito y esté a la vista
-        en su nombre). Uso previsto: habilitar el puente UART hacia un puente
-        Bluetooth externo (rama ``hardware/ble-bridge-nrf52840``).
+        [Verificado, ``docs/referencia-comandos-fw110.md`` §3.1] ``UART <DEC>``
+        **no agrega** una segunda salida: conmuta cuál de las dos interfaces
+        (USB CDC nativo o pines UART) recibe *todas* las respuestas del
+        firmware. Tras ``UART 1`` + ``SAVE``, la placa **deja de responder por
+        su USB nativo** y el cambio persiste a través de reinicios — no es una
+        habilitación aditiva y segura, es una conmutación con pérdida real de
+        acceso por el puerto usado para invocar este mismo método. Revertirlo
+        (``UART 0`` + ``SAVE``) requiere acceso físico a los pines UART; el
+        efecto de ``RESTORE`` sobre esta configuración **no está verificado**
+        en este proyecto (``RESTORE`` nunca se ejecutó contra hardware real,
+        solo se capturó su ayuda).
+
+        Deliberadamente no acepta parámetro: nunca debe poder enviarse
+        ``UART 0`` desde código automatizado (CLAUDE.md §2.2). Pero notar que
+        la variante que sí expone — ``UART 1`` — igualmente dejará inaccesible
+        el USB nativo de la placa sobre la que se ejecuta; quien la invoque
+        debe estar seguro de que esa placa se va a seguir usando exclusivamente
+        por los pines UART (p. ej. cableada a un puente Bluetooth externo,
+        rama ``hardware/ble-bridge-nrf52840``) y no por su USB nativo.
         """
         lines = self.send_command("UART 1")
         if not is_ok(lines):
