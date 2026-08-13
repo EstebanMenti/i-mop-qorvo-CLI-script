@@ -6,8 +6,11 @@ import pytest
 from typer.testing import CliRunner
 
 import dwm3001c_cli.app.cli as cli_module
+import dwm3001c_cli.transport.ble_discovery as ble_discovery_module
+import dwm3001c_cli.transport.ble_link as ble_link_module
 from dwm3001c_cli.calibration.autocal import CalibrationReport
 from dwm3001c_cli.core.models import ValidationResult
+from dwm3001c_cli.transport.ble_discovery import BleBoardInfo
 from dwm3001c_cli.transport.discovery import BoardPort
 from fakes import FakeTransport
 
@@ -31,6 +34,30 @@ class FakeLink(FakeTransport):
 
     def __exit__(self, *exc_info: object) -> None:
         self.close()
+
+
+class FakeBleLink(FakeTransport):
+    """``FakeTransport`` con soporte de context manager, como ``BleTransport``."""
+
+    def __init__(self, address: str, script: dict[str, list[str]] | None = None) -> None:
+        super().__init__(script=script)
+        self._address = address
+
+    @property
+    def name(self) -> str:
+        return f"BLE-{self._address.replace(':', '')}"
+
+    def __enter__(self) -> "FakeBleLink":
+        self.open()
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
+
+def patch_ble_links(monkeypatch: pytest.MonkeyPatch, links: dict[str, FakeBleLink]) -> None:
+    """Reemplaza ``BleTransport`` (importado en forma diferida en app/cli.py)."""
+    monkeypatch.setattr(ble_link_module, "BleTransport", lambda address, **kw: links[address])
 
 
 def js_stat(app: str = "NONE") -> list[str]:
@@ -108,6 +135,26 @@ class TestInfo:
         assert result.exit_code == 0
         assert "0xdeca0302" in result.stdout
         assert "ant0.ch9.ant_delay" in result.stdout
+
+
+class TestBleScan:
+    def test_without_boards_exits_1(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(ble_discovery_module, "find_ble_boards", lambda **kw: [])
+
+        result = runner.invoke(cli_module.app, ["ble-scan"])
+
+        assert result.exit_code == 1
+        assert "no se detectó" in result.stdout.lower()
+
+    def test_with_boards_lists_them(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        boards = [BleBoardInfo(address="FD:7A:90:57:CC:9F", name="UWB Node", rssi=-42)]
+        monkeypatch.setattr(ble_discovery_module, "find_ble_boards", lambda **kw: boards)
+
+        result = runner.invoke(cli_module.app, ["ble-scan"])
+
+        assert result.exit_code == 0
+        assert "FD:7A:90:57:CC:9F" in result.stdout
+        assert "UWB Node" in result.stdout
 
 
 class TestBleProvision:
@@ -227,6 +274,62 @@ class TestValidate:
 
         assert result.exit_code == 0
         assert captured["second_client"] is not None
+
+    def test_passes_second_client_when_second_ble_address_given(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        patch_links(monkeypatch, {"COM7": FakeLink("COM7", basic_script())})
+        patch_ble_links(
+            monkeypatch, {"FD:7A:90:57:CC:9F": FakeBleLink("FD:7A:90:57:CC:9F", basic_script())}
+        )
+        captured: dict[str, object] = {}
+
+        def fake_run_validation(
+            client: object, *, second_client: object = None, **kw: object
+        ) -> list[ValidationResult]:
+            captured["second_client"] = second_client
+            return []
+
+        monkeypatch.setattr(cli_module, "run_validation", fake_run_validation)
+
+        result = runner.invoke(
+            cli_module.app,
+            [
+                "validate",
+                "--port",
+                "COM7",
+                "--second-ble-address",
+                "FD:7A:90:57:CC:9F",
+                "--report-dir",
+                str(tmp_path),
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert captured["second_client"] is not None
+
+    def test_second_port_and_second_ble_address_are_mutually_exclusive(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        patch_links(monkeypatch, {"COM7": FakeLink("COM7", basic_script())})
+
+        result = runner.invoke(
+            cli_module.app,
+            [
+                "validate",
+                "--port",
+                "COM7",
+                "--second-port",
+                "COM8",
+                "--second-ble-address",
+                "FD:7A:90:57:CC:9F",
+                "--report-dir",
+                str(tmp_path),
+            ],
+        )
+
+        assert result.exit_code == 2
+        assert "excluyentes" in result.stdout
 
     def test_config_precedence_cli_wins_over_yaml(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -377,6 +480,60 @@ class TestCalibrate:
         assert result.exit_code == 0
         assert len(calls) == 1
         assert "16439" in result.stdout
+
+    def test_responder_and_responder_ble_address_are_mutually_exclusive(self) -> None:
+        result = runner.invoke(
+            cli_module.app,
+            [
+                "calibrate",
+                "--initiator",
+                "COM7",
+                "--responder",
+                "COM8",
+                "--responder-ble-address",
+                "FD:7A:90:57:CC:9F",
+                "--distance-m",
+                "2.0",
+            ],
+        )
+
+        assert result.exit_code == 2
+        assert "excluyentes" in result.stdout
+
+    def test_yes_skips_confirmation_with_ble_responder(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        patch_links(monkeypatch, {"COM7": FakeLink("COM7", self._calibrate_script())})
+        patch_ble_links(
+            monkeypatch,
+            {"FD:7A:90:57:CC:9F": FakeBleLink("FD:7A:90:57:CC:9F", self._calibrate_script())},
+        )
+        calls: list[tuple[object, ...]] = []
+
+        def fake_autocalibrate(
+            device: object, reference: object, **kwargs: object
+        ) -> CalibrationReport:
+            calls.append((device, reference, kwargs))
+            return self._canned_report()
+
+        monkeypatch.setattr(cli_module, "autocalibrate", fake_autocalibrate)
+
+        result = runner.invoke(
+            cli_module.app,
+            [
+                "calibrate",
+                "--initiator",
+                "COM7",
+                "--responder-ble-address",
+                "FD:7A:90:57:CC:9F",
+                "--distance-m",
+                "2.0",
+                "--yes",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert len(calls) == 1
 
     def test_accepted_confirmation_calls_autocalibrate(
         self, monkeypatch: pytest.MonkeyPatch

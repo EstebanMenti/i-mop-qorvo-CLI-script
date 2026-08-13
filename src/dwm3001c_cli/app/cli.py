@@ -39,6 +39,11 @@ from dwm3001c_cli.validation.runner import run_validation
 
 logger = logging.getLogger(__name__)
 
+# [Verificado 2026-08-13, hardware real] El default de DwmCliClient (0.3s,
+# calibrado para USB) corta la lectura a mitad de respuesta por BLE — se
+# midieron gaps de ~590ms incluso entre fragmentos de una respuesta sana.
+_BLE_QUIET_PERIOD_S = 1.5
+
 app = typer.Typer(
     name="dwm",
     help="Validación de comandos CLI y calibración de antenna delay del DWM3001C.",
@@ -212,6 +217,39 @@ def ble_provision(
     console.print(f"[bold green]UART habilitada y guardada en {port}:[/] {' '.join(after)}")
 
 
+# -------------------------------------------------------------------- ble-scan
+
+
+@app.command(name="ble-scan")
+def ble_scan(
+    timeout_s: Annotated[
+        float, typer.Option("--timeout-s", help="Duración del escaneo BLE (default: 6.0).")
+    ] = 6.0,
+) -> None:
+    """Escanea Bluetooth y lista los puentes nRF52840 encontrados (``"UWB Node"``).
+
+    Solo disponible con el extra ``ble`` instalado (``pip install -e .[ble]``,
+    rama ``hardware/ble-bridge-nrf52840``).
+    """
+    from dwm3001c_cli.transport.ble_discovery import find_ble_boards
+
+    with _error_boundary():
+        boards = find_ble_boards(timeout_s=timeout_s)
+    if not boards:
+        console.print("[yellow]No se detectó ningún puente nRF52840 por Bluetooth.[/]")
+        raise typer.Exit(code=1)
+
+    table = Table(title="Puentes nRF52840 detectados")
+    table.add_column("Dirección")
+    table.add_column("Nombre")
+    table.add_column("RSSI")
+    for board in boards:
+        table.add_row(
+            board.address, board.name or "-", "-" if board.rssi is None else str(board.rssi)
+        )
+    console.print(table)
+
+
 # ------------------------------------------------------------------ validate
 
 
@@ -222,25 +260,66 @@ def validate(
     ] = None,
     second_port: Annotated[
         str | None,
-        typer.Option("--second-port", help="Puerto de la segunda placa (habilita el check C4)."),
+        typer.Option(
+            "--second-port",
+            help="Puerto USB de la segunda placa (habilita el check C4); "
+            "excluyente con --second-ble-address.",
+        ),
     ] = None,
+    second_ble_address: Annotated[
+        str | None,
+        typer.Option(
+            "--second-ble-address",
+            help="Dirección BLE de la segunda placa, vía puente nRF52840 "
+            "(rama hardware/ble-bridge-nrf52840, ver 'dwm ble-scan'); "
+            "excluyente con --second-port.",
+        ),
+    ] = None,
+    ble_timeout_s: Annotated[
+        float,
+        typer.Option(
+            "--ble-timeout-s", help="Timeout de comando para la placa BLE (default: 10.0)."
+        ),
+    ] = 10.0,
     report_dir: Annotated[
         Path | None,
         typer.Option("--report-dir", help="Carpeta de reportes (default: reports/)."),
     ] = None,
     config: Annotated[
         Path | None,
-        typer.Option("--config", help="YAML con claves: port, second_port, report_dir."),
+        typer.Option(
+            "--config",
+            help="YAML con claves: port, second_port, second_ble_address, "
+            "ble_timeout_s, report_dir.",
+        ),
     ] = None,
 ) -> None:
     """Corre la suite de validación de comandos y escribe reportes JSON+Markdown."""
     with _error_boundary():
-        yaml_cfg = load_yaml_config(config, allowed_keys={"port", "second_port", "report_dir"})
+        yaml_cfg = load_yaml_config(
+            config,
+            allowed_keys={
+                "port",
+                "second_port",
+                "second_ble_address",
+                "ble_timeout_s",
+                "report_dir",
+            },
+        )
         resolved_port = resolve_option("port", port, yaml_cfg, None)
         resolved_second_port = resolve_option("second_port", second_port, yaml_cfg, None)
+        resolved_second_ble = resolve_option(
+            "second_ble_address", second_ble_address, yaml_cfg, None
+        )
+        resolved_ble_timeout_s = resolve_option("ble_timeout_s", ble_timeout_s, yaml_cfg, 10.0)
         resolved_report_dir = Path(resolve_option("report_dir", report_dir, yaml_cfg, "reports"))
         if not resolved_port:
             console.print("[bold red]Error:[/] falta --port (o la clave 'port' en --config)")
+            raise typer.Exit(code=2)
+        if resolved_second_port and resolved_second_ble:
+            console.print(
+                "[bold red]Error:[/] --second-port y --second-ble-address son excluyentes"
+            )
             raise typer.Exit(code=2)
 
         with ExitStack() as stack:
@@ -250,6 +329,15 @@ def validate(
             if resolved_second_port:
                 second_link = stack.enter_context(SerialLink(resolved_second_port))
                 second_client = DwmCliClient(second_link)
+            elif resolved_second_ble:
+                from dwm3001c_cli.transport.ble_link import BleTransport
+
+                second_ble_link = stack.enter_context(BleTransport(resolved_second_ble))
+                second_client = DwmCliClient(
+                    second_ble_link,
+                    command_timeout_s=resolved_ble_timeout_s,
+                    quiet_period_s=_BLE_QUIET_PERIOD_S,
+                )
 
             results = run_validation(client, second_client=second_client)
             device = client.stat()
@@ -286,8 +374,28 @@ def calibrate(
         str | None, typer.Option("--initiator", help="Puerto de la placa de referencia (INITF).")
     ] = None,
     responder: Annotated[
-        str | None, typer.Option("--responder", help="Puerto de la placa a calibrar (RESPF).")
+        str | None,
+        typer.Option(
+            "--responder",
+            help="Puerto USB de la placa a calibrar (RESPF); "
+            "excluyente con --responder-ble-address.",
+        ),
     ] = None,
+    responder_ble_address: Annotated[
+        str | None,
+        typer.Option(
+            "--responder-ble-address",
+            help="Dirección BLE de la placa a calibrar, vía puente nRF52840 "
+            "(rama hardware/ble-bridge-nrf52840, ver 'dwm ble-scan'); "
+            "excluyente con --responder.",
+        ),
+    ] = None,
+    ble_timeout_s: Annotated[
+        float,
+        typer.Option(
+            "--ble-timeout-s", help="Timeout de comando para el responder BLE (default: 10.0)."
+        ),
+    ] = 10.0,
     distance_m: Annotated[
         float | None,
         typer.Option("--distance-m", help="Distancia real entre placas, en metros."),
@@ -332,6 +440,8 @@ def calibrate(
             allowed_keys={
                 "initiator",
                 "responder",
+                "responder_ble_address",
+                "ble_timeout_s",
                 "distance_m",
                 "samples",
                 "tolerance_cm",
@@ -341,12 +451,24 @@ def calibrate(
         )
         resolved_initiator = resolve_option("initiator", initiator, yaml_cfg, None)
         resolved_responder = resolve_option("responder", responder, yaml_cfg, None)
+        resolved_responder_ble = resolve_option(
+            "responder_ble_address", responder_ble_address, yaml_cfg, None
+        )
+        resolved_ble_timeout_s = resolve_option("ble_timeout_s", ble_timeout_s, yaml_cfg, 10.0)
         resolved_distance_m = resolve_option("distance_m", distance_m, yaml_cfg, None)
+        if resolved_responder and resolved_responder_ble:
+            console.print(
+                "[bold red]Error:[/] --responder y --responder-ble-address son excluyentes"
+            )
+            raise typer.Exit(code=2)
         missing = [
             name
             for name, value in (
                 ("--initiator", resolved_initiator),
-                ("--responder", resolved_responder),
+                (
+                    "--responder o --responder-ble-address",
+                    resolved_responder or resolved_responder_ble,
+                ),
                 ("--distance-m", resolved_distance_m),
             )
             if not value
@@ -363,19 +485,30 @@ def calibrate(
             do_save=not no_save,
         )
 
-        with (
-            SerialLink(resolved_initiator) as initiator_link,
-            SerialLink(resolved_responder) as responder_link,
-        ):
+        with ExitStack() as stack:
+            initiator_link = stack.enter_context(SerialLink(resolved_initiator))
             initiator_client = DwmCliClient(initiator_link)
-            responder_client = DwmCliClient(responder_link)
+            if resolved_responder:
+                responder_client = DwmCliClient(stack.enter_context(SerialLink(resolved_responder)))
+                responder_label = resolved_responder
+            else:
+                from dwm3001c_cli.transport.ble_link import BleTransport
+
+                assert resolved_responder_ble is not None  # descartado por el check de "missing"
+                responder_client = DwmCliClient(
+                    stack.enter_context(BleTransport(resolved_responder_ble)),
+                    command_timeout_s=resolved_ble_timeout_s,
+                    quiet_period_s=_BLE_QUIET_PERIOD_S,
+                )
+                responder_label = f"BLE:{resolved_responder_ble}"
+
             responder_client.ensure_mode_none()
             initiator_client.ensure_mode_none()
 
             current = responder_client.calkey_read(config_obj.key)
             if not yes:
                 confirmed = typer.confirm(
-                    f"Se va a calibrar {config_obj.key} en {resolved_responder} "
+                    f"Se va a calibrar {config_obj.key} en {responder_label} "
                     f"(valor actual: {current.value}). ¿Continuar?"
                 )
                 if not confirmed:

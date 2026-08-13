@@ -139,11 +139,27 @@ class DwmCliClient:
             no lo abre ni lo cierra.
         command_timeout_s: tiempo máximo por defecto para esperar la respuesta
             de un comando.
+        quiet_period_s: período de silencio por defecto que marca el fin de una
+            respuesta sin ``ok``/``KO`` explícito (ver :meth:`send_command`).
+            El default (0.3s) está calibrado para USB. [Verificado 2026-08-13,
+            hardware real] Por BLE (rama ``hardware/ble-bridge-nrf52840``) se
+            midieron gaps de ~590ms incluso entre fragmentos de una respuesta
+            sana — con 0.3s, ``send_command`` corta la lectura a mitad de
+            respuesta y el resto queda en la cola, contaminando el próximo
+            comando. La capa ``app`` debe pasar un valor mayor (~1.5s) al
+            construir un cliente sobre ``BleTransport``.
     """
 
-    def __init__(self, transport: Transport, *, command_timeout_s: float = 2.0) -> None:
+    def __init__(
+        self,
+        transport: Transport,
+        *,
+        command_timeout_s: float = 2.0,
+        quiet_period_s: float = 0.3,
+    ) -> None:
         self._transport = transport
         self._command_timeout_s = command_timeout_s
+        self._quiet_period_s = quiet_period_s
 
     @property
     def name(self) -> str:
@@ -155,7 +171,7 @@ class DwmCliClient:
         self,
         cmd: str,
         *,
-        quiet_period_s: float = 0.3,
+        quiet_period_s: float | None = None,
         timeout_s: float | None = None,
     ) -> list[str]:
         """Envía un comando y recolecta su respuesta completa.
@@ -177,6 +193,7 @@ class DwmCliClient:
             CommandTimeoutError: si no llegó ninguna línea dentro del timeout.
         """
         limit = timeout_s if timeout_s is not None else self._command_timeout_s
+        quiet_period_s = quiet_period_s if quiet_period_s is not None else self._quiet_period_s
         cmd_upper = cmd.strip().upper()
         self._transport.write_line(cmd)
         deadline = time.monotonic() + limit

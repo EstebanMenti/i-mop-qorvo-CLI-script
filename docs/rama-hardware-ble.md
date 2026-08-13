@@ -105,9 +105,9 @@ Las ramas cortas de trabajo dentro de esta rama siguen la convención habitual
 | Fase | Contenido | Estado |
 |---|---|---|
 | F7 | `dwm ble-provision`: habilita `UART 1` + `SAVE` en el Qorvo del lado BLE (por USB) | implementado; **no aplicable a la placa RESPONDER actual** (ver nota §7.1) |
-| F8 | `transport/ble_link.py` (`BleTransport` sobre Nordic UART Service vía `bleak`), `transport/ble_discovery.py`, wiring en `app/cli.py` | pendiente |
+| F8 | `transport/ble_link.py` (`BleTransport` sobre Nordic UART Service vía `bleak`), `transport/ble_discovery.py`, wiring en `app/cli.py` | **implementado y verificado contra hardware real** (2026-08-13): `ensure_mode_none`, `STAT` y `LISTCAL` completo (259 claves, la respuesta más grande) llegaron íntegros por BLE — ver §7.2 |
 | F9 | GUI de escritorio PySide6 (`src/dwm3001c_cli/gui/`): conexión, terminal manual, validación y calibración con gráfico en vivo | pendiente |
-| F10 | Verificación end-to-end contra hardware real; resolución de los riesgos de la §8 | pendiente |
+| F10 | Verificación end-to-end contra hardware real (`validate`/`calibrate` completos, sesión TWR real); resolución de los riesgos restantes de la §8 | pendiente |
 
 F7 va primero porque no depende de BLE (usa `SerialLink` normal) y es
 precondición física de todo lo demás.
@@ -146,6 +146,45 @@ especificación del firmware puente citada originalmente. `BleTransport`
 (F8) va a tener que filtrarla, igual que hoy se descarta el eco por USB en
 `DwmCliClient.send_command`.
 
+### 7.2 Dos bugs reales encontrados y corregidos durante la verificación de F8
+
+Implementado `BleTransport`/`ble_discovery.py` reusando `DwmCliClient` sin
+cambios (confirmado: es transporte-agnóstico como estaba previsto). Un smoke
+test con la implementación de producción (no el prototipo de §7.1) contra la
+placa RESPONDER real reveló dos bugs reales, diagnosticados con timestamps
+relativos precisos:
+
+1. **`power_on()`/`power_off()` no consumían su propia respuesta.** El
+   firmware puente responde a `qorvo on` con `"Qorvo status changed to: ON"`
+   pero **sin marcador `ok`/`KO`** (a diferencia de los comandos CLI reales) —
+   nada en `send_command` esperaba eso, porque `power_on()` nunca llamaba a
+   `read_line()`. Esa línea quedaba sin consumir en la cola interna de
+   `BleTransport`, y el **siguiente comando real** (`STOP`, enviado por
+   `ensure_mode_none()`) la heredaba como si fuera su propia respuesta.
+   Confirmado con timestamps: `qorvo on` respondió en ~90ms, pero como nadie
+   la leyó, quedó ahí hasta que `STOP` la consumió por error 3 segundos
+   después. Corregido: `power_on()`/`power_off()` ahora drenan su propia
+   respuesta con `_drain_response()` antes de devolver el control
+   (`transport/ble_link.py`).
+2. **`quiet_period_s=0.3` (default de `DwmCliClient`, calibrado para USB) es
+   insuficiente para BLE.** Medido con hardware real: hasta **~590ms** de gap
+   entre el eco de un comando y el resto de su respuesta — muy por encima de
+   los 300ms de silencio que `send_command` tolera antes de dar la respuesta
+   por terminada. Esto cortaba la lectura a mitad de respuesta, dejando el
+   resto en la cola para contaminar el próximo comando (el mismo síntoma que
+   el bug 1, por una causa distinta). Corregido: `DwmCliClient` ahora acepta
+   `quiet_period_s` en el constructor (antes solo por llamada a
+   `send_command`); `app/cli.py` pasa `quiet_period_s=1.5` para los clientes
+   BLE (`_BLE_QUIET_PERIOD_S`).
+
+**Sin ambos fixes, cualquier secuencia de comandos sobre BLE con más de un
+paso (exactamente lo que hacen `ensure_mode_none`, `validate` y `calibrate`)
+fallaba de forma intermitente y confusa** (un `ValueError` de parseo en un
+comando que nada tenía que ver con el que realmente falló). Verificado tras
+el fix: `ensure_mode_none()` + `STAT` + `LISTCAL` (259 claves) corridos en
+secuencia contra la placa real, sin errores, con la implementación de
+producción (`transport/ble_link.py`, no el prototipo).
+
 ## 8. Riesgos e incertidumbres a verificar contra hardware real
 
 No inventar comportamiento no documentado — esta tabla se actualiza con el
@@ -153,7 +192,7 @@ resultado real de F10.
 
 | Riesgo | Por qué importa | Resultado |
 |---|---|---|
-| MTU efectivo con `bleak`/WinRT en Windows (no solo con una app de celular) | Si es insuficiente, las respuestas (o la escritura de `RESPF`/`INITF`) se truncan | **Confirmado** (2026-08-13, smoke test propio con `bleak` 3.0.2 sobre Python 3.14/WinRT): MTU negociado **247**, un `STAT` completo llegó entero. Falta todavía confirmar con `LISTCAL` (259 líneas) y con la escritura saliente de un `RESPF`/`INITF` completo |
+| MTU efectivo con `bleak`/WinRT en Windows (no solo con una app de celular) | Si es insuficiente, las respuestas (o la escritura de `RESPF`/`INITF`) se truncan | **Confirmado** (2026-08-13): MTU negociado **247**; `STAT` **y `LISTCAL` completo (259 líneas, la respuesta más grande)** llegaron enteros, con la implementación de producción (`transport/ble_link.py`). Falta todavía confirmar la escritura saliente de un `RESPF`/`INITF` completo (~130+ caracteres) |
 | Latencia real del puente | Define si los timeouts del cliente Python alcanzan | **Confirmado**: ~570-620 ms extremo a extremo para un `STAT` completo. El default planeado de `--ble-timeout-s 10.0` tiene margen de sobra |
 | `qorvo off` — ¿corta la conexión BLE o solo apaga el módulo Qorvo? | No documentado en la especificación del firmware puente | pendiente de verificar |
 | Reaparición del "eco pegado sin separador" ya visto en el bridge UART de J9 (`core/client.py`) | La lógica ya existe, pero nunca se ejerció con este puente | pendiente de verificar |
@@ -163,7 +202,9 @@ resultado real de F10.
 | Texto exacto del marcador de timeout del puente | Necesario para detectarlo y relanzarlo como `TransportError` | **Confirmado con hardware real** (2026-08-13): llega fragmentado en 3 notificaciones — `'Error: sin respues'` + `'ta del modul'` + `'o Qorvo (timeout)\r\n'` — y la duración real medida fue ~8.26 s (coincide con el límite duro de 8000 ms documentado) |
 | **[Nuevo, no anticipado]** La conexión BLE se cae sola ~7-8 s después de la última actividad (éxito o timeout, mismo patrón en ambos casos) | `BleTransport` no puede asumir una conexión persistente de larga duración entre comandos; probablemente necesite reconectar por comando o tras inactividad | **Confirmado** (2026-08-13, smoke test propio, dos corridas): desconexión espontánea detectada por `disconnected_callback` ~7.7-7.9 s después del último dato recibido, en ambas corridas (una con timeout del bridge, otra con respuesta exitosa) — a investigar más en F8/F10 si es un supervision timeout de BLE o algo propio del firmware puente |
 | `qorvo on` sin `-t`/`--time` deja el módulo encendido indefinidamente; con `-t 60s` se apaga solo | Si el módulo se apaga solo, cualquier comando posterior da timeout del puente aunque la placa y el puente estén bien | **Confirmado por observación**: un `qorvo stat` mandado minutos después de un `qorvo on --time 60s` (probado desde celular) dio el timeout de 8 s de arriba; al mandar `qorvo on` (sin límite) antes, `qorvo stat` funcionó de inmediato. `BleTransport`/GUI deberían encender explícitamente antes de operar, no asumir que el módulo ya está alimentado |
-| Sin reconexión automática ante un corte BLE a mitad de una calibración larga | Decisión de diseño consciente (mismo criterio que `SerialLink`); BLE es más propenso a cortes transitorios que un cable | comportamiento esperado, fuera de alcance de esta rama |
+| Reconexión ante un corte BLE (a diferencia de `SerialLink`, que nunca reconecta sola) | Dado que la conexión se cae sola cada ~7-8s de inactividad (fila de arriba), *no* reconectar habría roto cualquier secuencia de comandos con pausas | **Decisión deliberada, implementada**: `write_line()` reconecta automáticamente si detecta la conexión caída (`_ensure_connected()`), a diferencia de `SerialLink`. Documentado como desvío consciente en `transport/ble_link.py` y probado sin hardware (`test_reconnects_automatically_after_disconnect`); falta medir en F10 la latencia real de una reconexión a mitad de una calibración larga |
+| **[Bug real, corregido]** `power_on()`/`power_off()` no leían su propia respuesta (`"Qorvo status changed to: ..."`, sin marcador `ok`) | La línea quedaba en la cola y el siguiente comando real la heredaba como si fuera su propia respuesta — rompió el parseo de `STAT` en la primera prueba con hardware real | **Confirmado y corregido** (2026-08-13): `power_on()`/`power_off()` ahora drenan su respuesta con `_drain_response()` antes de devolver el control — ver §7.2 |
+| **[Bug real, corregido]** `quiet_period_s=0.3` (default de USB) insuficiente para BLE — se midieron gaps de ~590ms entre fragmentos de una respuesta sana | Cortaba la lectura a mitad de respuesta, con el mismo síntoma que el bug de arriba | **Confirmado y corregido** (2026-08-13): `DwmCliClient` ahora acepta `quiet_period_s` en el constructor; `app/cli.py` usa `1.5s` para clientes BLE (`_BLE_QUIET_PERIOD_S`) — ver §7.2 |
 
 > **Nota sobre el smoke test:** las filas marcadas "smoke test propio" (2026-08-13)
 > se hicieron con un script descartable (no versionado, `bleak==3.0.2` sobre
