@@ -153,15 +153,23 @@ resultado real de F10.
 
 | Riesgo | Por qué importa | Resultado |
 |---|---|---|
-| MTU efectivo (¿alcanza para respuestas largas como `STAT`/`LISTCAL`?) | Si es insuficiente, las respuestas se truncan | **Parcialmente confirmado** (2026-08-13, vía app de terminal BLE en celular, no con esta herramienta): un `STAT` completo (~300+ bytes) llegó entero sin truncar. Falta confirmar con `LISTCAL` (259 líneas) y con la escritura de un `RESPF`/`INITF` completo (~130+ caracteres salientes) desde `bleak`/WinRT específicamente, que es el backend que va a usar esta herramienta |
-| Latencia real del puente | Define si los timeouts del cliente Python alcanzan | **Confirmado**: ~620 ms extremo a extremo para un `STAT` completo (de los más largos). El default planeado de `--ble-timeout-s 10.0` tiene margen de sobra |
+| MTU efectivo con `bleak`/WinRT en Windows (no solo con una app de celular) | Si es insuficiente, las respuestas (o la escritura de `RESPF`/`INITF`) se truncan | **Confirmado** (2026-08-13, smoke test propio con `bleak` 3.0.2 sobre Python 3.14/WinRT): MTU negociado **247**, un `STAT` completo llegó entero. Falta todavía confirmar con `LISTCAL` (259 líneas) y con la escritura saliente de un `RESPF`/`INITF` completo |
+| Latencia real del puente | Define si los timeouts del cliente Python alcanzan | **Confirmado**: ~570-620 ms extremo a extremo para un `STAT` completo. El default planeado de `--ble-timeout-s 10.0` tiene margen de sobra |
 | `qorvo off` — ¿corta la conexión BLE o solo apaga el módulo Qorvo? | No documentado en la especificación del firmware puente | pendiente de verificar |
 | Reaparición del "eco pegado sin separador" ya visto en el bridge UART de J9 (`core/client.py`) | La lógica ya existe, pero nunca se ejerció con este puente | pendiente de verificar |
-| Prompt del shell de Zephyr (`bt_nus:~$`) intercalado en la respuesta | No documentado en la especificación original del firmware puente; hay que filtrarlo en `BleTransport` | **Confirmado que existe** (2026-08-13); pendiente de implementar el filtro en F8 |
+| Prompt del shell de Zephyr (`bt_nus:~$ `) intercalado en la respuesta | Hay que filtrarlo en `BleTransport`, igual que el eco por USB | **Confirmado** (2026-08-13, smoke test propio): aparece tras cada respuesta, ej. `'...\r\n\r\n\r\nbt_nus:~$ '` |
 | `UART <DEC>` es exclusivo (USB↔pines), no aditivo — ver §7.1 | Provisionar `UART 1` deja inaccesible el USB nativo de esa misma placa, de forma persistente | **Confirmado** por `docs/referencia-comandos-fw110.md` §3.1; corregido el docstring/mensaje de `ble-provision` que lo subestimaba |
-| Pairing Just Works — ¿requiere emparejamiento manual previo desde Windows? | Puede bloquear la conexión con un diálogo del sistema | pendiente de verificar |
-| Texto exacto del marcador de timeout del puente (`"Error: sin respuesta del modulo Qorvo (timeout)"`) | Documentado en el repo hermano, no capturado en este repo aún | pendiente de verificar |
+| Pairing Just Works — ¿requiere emparejamiento manual previo desde Windows? | Puede bloquear la conexión con un diálogo del sistema | **Descartado como bloqueante**: `bleak`/WinRT conectó sin ningún diálogo ni emparejamiento manual previo desde Windows (smoke test 2026-08-13) |
+| Texto exacto del marcador de timeout del puente | Necesario para detectarlo y relanzarlo como `TransportError` | **Confirmado con hardware real** (2026-08-13): llega fragmentado en 3 notificaciones — `'Error: sin respues'` + `'ta del modul'` + `'o Qorvo (timeout)\r\n'` — y la duración real medida fue ~8.26 s (coincide con el límite duro de 8000 ms documentado) |
+| **[Nuevo, no anticipado]** La conexión BLE se cae sola ~7-8 s después de la última actividad (éxito o timeout, mismo patrón en ambos casos) | `BleTransport` no puede asumir una conexión persistente de larga duración entre comandos; probablemente necesite reconectar por comando o tras inactividad | **Confirmado** (2026-08-13, smoke test propio, dos corridas): desconexión espontánea detectada por `disconnected_callback` ~7.7-7.9 s después del último dato recibido, en ambas corridas (una con timeout del bridge, otra con respuesta exitosa) — a investigar más en F8/F10 si es un supervision timeout de BLE o algo propio del firmware puente |
+| `qorvo on` sin `-t`/`--time` deja el módulo encendido indefinidamente; con `-t 60s` se apaga solo | Si el módulo se apaga solo, cualquier comando posterior da timeout del puente aunque la placa y el puente estén bien | **Confirmado por observación**: un `qorvo stat` mandado minutos después de un `qorvo on --time 60s` (probado desde celular) dio el timeout de 8 s de arriba; al mandar `qorvo on` (sin límite) antes, `qorvo stat` funcionó de inmediato. `BleTransport`/GUI deberían encender explícitamente antes de operar, no asumir que el módulo ya está alimentado |
 | Sin reconexión automática ante un corte BLE a mitad de una calibración larga | Decisión de diseño consciente (mismo criterio que `SerialLink`); BLE es más propenso a cortes transitorios que un cable | comportamiento esperado, fuera de alcance de esta rama |
+
+> **Nota sobre el smoke test:** las filas marcadas "smoke test propio" (2026-08-13)
+> se hicieron con un script descartable (no versionado, `bleak==3.0.2` sobre
+> Python 3.14.4/WinRT en esta PC), instalado temporalmente para validar el
+> diseño antes de escribir `BleTransport` (F8). Dirección BLE de la placa
+> RESPONDER de este banco: `FD:7A:90:57:CC:9F`, advertising como `UWB Node`.
 
 ## 9. Referencias
 
