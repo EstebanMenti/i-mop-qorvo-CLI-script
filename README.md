@@ -1,5 +1,10 @@
 # dwm3001c-cli — Validación y calibración del Qorvo DWM3001C por CLI
 
+> **Rama `hardware/ble-bridge-nrf52840`:** esta rama agrega un modo RESPONDER
+> por puente Bluetooth (nRF52840) y una GUI de escritorio; ver
+> [docs/rama-hardware-ble.md](docs/rama-hardware-ble.md). Es una rama de larga
+> vida que no se mergea a `main`.
+
 > **Estado:** proyecto completo (fases F0–F6). **Ambos objetivos funcionales cumplidos contra hardware real** (fw 1.1.0): validación de comandos 18/18 PASS, incluso con la herramienta `dwm` terminada ([docs/resultados-validacion.md](docs/resultados-validacion.md)) y calibración automática de *antenna delay* convergida y persistida — error de +36 cm a +1,3 cm ([docs/resultados-calibracion.md](docs/resultados-calibracion.md)). Detalle de fases en [docs/plan-implementacion.md](docs/plan-implementacion.md).
 > **Alcance:** herramienta Python de línea de comandos para validar el firmware CLI del módulo **Qorvo DWM3001C** (placa de desarrollo **DWM3001CDK**) y automatizar la **calibración del retardo de antena** (*antenna delay*) por Two-Way Ranging.
 

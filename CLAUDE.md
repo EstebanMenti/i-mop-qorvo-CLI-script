@@ -131,6 +131,18 @@ i-mop-qorvo-CLI-script/
   - `chore/` — mantenimiento, tooling, CI
   - `refactor/` — reestructuración sin cambio de comportamiento
 
+> **Excepción — ramas `hardware/`:** además de las ramas cortas de arriba
+> (que siempre terminan mergeadas a `main` y borradas), existe una categoría
+> especial para bancos de pruebas atados a hardware que no siempre está
+> disponible: `hardware/<descripcion-corta-kebab-case>`. Son ramas de **larga
+> vida que nunca se mergean a `main`**; se sincronizan periódicamente trayendo
+> cambios de `main` (`git merge origin/main`, nunca rebase, para no romper
+> ramas cortas abiertas contra ellas) y tienen su propio documento en `docs/`
+> explicando su propósito y setup. Dentro de una rama `hardware/` se siguen
+> abriendo ramas cortas normales (`feature/`, `fix/`, ...) cuyos PR apuntan
+> contra la rama `hardware/`, no contra `main`. Ejemplo:
+> `hardware/ble-bridge-nrf52840` (ver [docs/rama-hardware-ble.md](docs/rama-hardware-ble.md)).
+
 ### 5.2 Commits — Conventional Commits en español
 
 Formato: `<tipo>(<ámbito opcional>): <descripción en imperativo, minúscula, sin punto final>`
