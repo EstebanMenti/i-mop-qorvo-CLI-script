@@ -525,7 +525,7 @@ def calibrate(
 
     console.print(
         f"[bold green]Calibración convergida:[/] {report.key} "
-        f"{report.initial_delay} → {report.final_delay} "
+        f"{report.initial_delay} -> {report.final_delay} "
         f"({'guardado en NVM' if report.saved else 'sin guardar'})"
     )
 
