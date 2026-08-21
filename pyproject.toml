@@ -23,6 +23,7 @@ dev = [
     "mypy>=1.10",
     "types-pyyaml",
     "types-pyserial",
+    "pytest-qt>=4.5",
 ]
 # Solo necesario en la rama hardware/ble-bridge-nrf52840 (responder por puente
 # Bluetooth nRF52840): quien use dwm3001c-cli con dos placas por USB (main) no
@@ -31,9 +32,17 @@ dev = [
 ble = [
     "bleak>=3.0",
 ]
+# GUI de escritorio (F9, rama hardware/ble-bridge-nrf52840). pyqtgraph: widget
+# Qt nativo, mejor ajuste que matplotlib para redibujar en vivo a la tasa de
+# notificaciones de ranging (~5-10 Hz) sin fricción con el loop de eventos de Qt.
+gui = [
+    "PySide6>=6.7",
+    "pyqtgraph>=0.13",
+]
 
 [project.scripts]
 dwm = "dwm3001c_cli.app.cli:main"
+dwm-gui = "dwm3001c_cli.gui.app:main_gui"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -47,11 +56,23 @@ extend-exclude = ["prueba.py"]
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "SIM", "RUF"]
 
+[tool.ruff.lint.per-file-ignores]
+# gui/: los overrides de Qt (rowCount, columnCount, headerData, data,
+# closeEvent, ...) deben usar exactamente los nombres/firmas de la API C++
+# de Qt — camelCase y valores por defecto tipo QModelIndex() son parte del
+# contrato, no un descuido de estilo.
+"src/dwm3001c_cli/gui/**/*.py" = ["N802", "B008"]
+
 [tool.mypy]
 python_version = "3.11"
 strict = true
 mypy_path = "src"
 packages = ["dwm3001c_cli"]
+
+[[tool.mypy.overrides]]
+# pyqtgraph no publica stubs ni marcador py.typed.
+module = "pyqtgraph.*"
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -106,7 +106,7 @@ Las ramas cortas de trabajo dentro de esta rama siguen la convención habitual
 |---|---|---|
 | F7 | `dwm ble-provision`: habilita `UART 1` + `SAVE` en el Qorvo del lado BLE (por USB) | implementado; **no aplicable a la placa RESPONDER actual** (ver nota §7.1) |
 | F8 | `transport/ble_link.py` (`BleTransport` sobre Nordic UART Service vía `bleak`), `transport/ble_discovery.py`, wiring en `app/cli.py` | **implementado y verificado contra hardware real** (2026-08-13): `ensure_mode_none`, `STAT` y `LISTCAL` completo (259 claves, la respuesta más grande) llegaron íntegros por BLE — ver §7.2 |
-| F9 | GUI de escritorio PySide6 (`src/dwm3001c_cli/gui/`): conexión, terminal manual, validación y calibración con gráfico en vivo | pendiente |
+| F9 | GUI de escritorio PySide6 (`src/dwm3001c_cli/gui/`): conexión, terminal manual, validación y calibración con gráfico en vivo | **implementado, sin verificar aún contra hardware real** — tests con `pytest-qt` sobre `FakeTransport` en verde; falta el smoke test manual de la app (`dwm-gui`) con placas reales |
 | F10 | Verificación end-to-end contra hardware real (`validate`/`calibrate` completos, sesión TWR real, direccionamiento ADDR/PADDR) | **completo y verificado** (2026-08-13): sesión TWR real 50/50 SUCCESS, `dwm validate` 17/17 PASS con BLE primaria, recalibración real convergida (16376→16200), y las 4 combinaciones de direccionamiento ADDR/PADDR verificadas — ver [resultados-verificacion-ble.md](resultados-verificacion-ble.md) |
 
 F7 va primero porque no depende de BLE (usa `SerialLink` normal) y es
