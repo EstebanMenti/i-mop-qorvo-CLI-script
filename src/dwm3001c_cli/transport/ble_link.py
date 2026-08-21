@@ -203,7 +203,35 @@ class BleTransport:
 
     def write_line(self, line: str) -> None:
         self._ensure_connected()
+        self._reset_pending()
         self._run_coro(self._send_raw(line), timeout_s=self._write_timeout_s)
+
+    def _reset_pending(self) -> None:
+        """Descarta cualquier fragmento/línea que haya quedado de la respuesta
+        anterior antes de mandar un comando nuevo.
+
+        [Bug real, 2026-08-13] Las notificaciones BLE (característica NUS TX,
+        modo "Notify") **no tienen ACK ni retransmisión a nivel GATT**: una
+        notificación perdida es normal y posible. Cuando la línea que
+        contenía el ``\\n`` de cierre es justo la que se pierde, el fragmento
+        parcial queda indefinidamente en el buffer del ``LineAssembler`` —
+        confirmado con hardware real: un ``CALKEY <clave> <valor>`` se quedó
+        sin respuesta 30s, y el eco truncado (``CALKEY <clave>``, sin el
+        valor ni el terminador) reapareció recién cuando un comando
+        *completamente distinto*, minutos después, aportó el ``\\n`` que le
+        faltaba — produciendo una línea mezclada sin sentido que rompió el
+        parseo del comando siguiente. No se puede recuperar el dato perdido,
+        pero si se limpia el buffer antes de cada comando nuevo, lo peor que
+        pasa es un timeout honesto en el comando que perdió su notificación,
+        en vez de corromper silenciosamente la respuesta de otro comando.
+        """
+        while True:
+            try:
+                self._rx_queue.get_nowait()
+            except queue.Empty:
+                break
+        self._assembler = LineAssembler()
+        self._pending_error = None
 
     def read_line(self, timeout_s: float) -> str | None:
         """Devuelve la próxima línea, o ``None`` si venció ``timeout_s``.
