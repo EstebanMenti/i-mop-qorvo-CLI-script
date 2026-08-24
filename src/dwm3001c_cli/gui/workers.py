@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Protocol
 
-from PySide6.QtCore import QObject, QThread, Signal, Slot
+from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
 
 from dwm3001c_cli.calibration.autocal import (
     AutocalConfig,
@@ -83,26 +83,42 @@ class ConnectWorker(QObject):
 
 
 class TerminalWorker(QObject):
-    """Terminal manual: lee líneas del transporte activo en un loop propio."""
+    """Terminal manual: lee líneas del transporte activo con un ``QTimer``.
+
+    ``run()`` arranca un ``QTimer`` y retorna enseguida — a propósito, *no*
+    bloquea. Como es un slot directo de ``QThread.started`` (mismo hilo),
+    corre *antes* de que ``QThread`` entre a su propio ``exec()``: un
+    ``run()`` bloqueante (loop ``while`` propio) impediría que el loop de
+    eventos del hilo arrancara, y con él, la entrega de cualquier señal en
+    cola dirigida a este worker (p. ej. ``send``) — quedaría pendiente para
+    siempre. Con el timer, ``run()`` retorna, ``exec()`` arranca de verdad, y
+    tanto el polling (``timeout``) como ``send`` se procesan en el mismo loop
+    de eventos, sin busy-loop ni ``processEvents()`` manual.
+    """
 
     line_received = Signal(str)
 
     def __init__(self, transport: Transport) -> None:
         super().__init__()
         self._transport = transport
-        self._running = False
+        self._timer: QTimer | None = None
 
     @Slot()
     def run(self) -> None:
-        self._running = True
-        while self._running:
-            try:
-                line = self._transport.read_line(0.2)
-            except Dwm3001cError as exc:
-                self.line_received.emit(f"[error] {exc}")
-                break
-            if line is not None:
-                self.line_received.emit(line)
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._poll)
+        self._timer.start(50)
+
+    def _poll(self) -> None:
+        try:
+            line = self._transport.read_line(0.2)
+        except Dwm3001cError as exc:
+            self.line_received.emit(f"[error] {exc}")
+            if self._timer is not None:
+                self._timer.stop()
+            return
+        if line is not None:
+            self.line_received.emit(line)
 
     @Slot(str)
     def send(self, line: str) -> None:
@@ -110,9 +126,6 @@ class TerminalWorker(QObject):
             self._transport.write_line(line)
         except Dwm3001cError as exc:
             self.line_received.emit(f"[error] {exc}")
-
-    def stop(self) -> None:
-        self._running = False
 
 
 class ValidationWorker(QObject):

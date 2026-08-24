@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextlib
 from datetime import datetime
 
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -64,13 +64,13 @@ class TerminalView(QWidget):
 
     def set_initiator(self, transport: Transport) -> None:
         self._initiator_transport = transport
-        self._refresh_targets()
+        self._refresh_targets(prefer="initiator")
 
     def set_responder(self, transport: Transport) -> None:
         self._responder_transport = transport
-        self._refresh_targets()
+        self._refresh_targets(prefer="responder")
 
-    def _refresh_targets(self) -> None:
+    def _refresh_targets(self, prefer: str | None = None) -> None:
         current = self._target_combo.currentData()
         self._target_combo.blockSignals(True)
         self._target_combo.clear()
@@ -79,9 +79,24 @@ class TerminalView(QWidget):
             self._target_combo.addItem(f"INITIATOR ({self._initiator_transport.name})", "initiator")
         if self._responder_transport is not None:
             self._target_combo.addItem(f"RESPONDER ({self._responder_transport.name})", "responder")
-        index = self._target_combo.findData(current)
+        # Si ya había una selección explícita del usuario, se preserva; si no
+        # (todavía en el placeholder), se prioriza el rol recién conectado —
+        # si no, conectar una placa no activaba el terminal automáticamente.
+        wanted = current if current is not None else prefer
+        index = self._target_combo.findData(wanted)
         self._target_combo.setCurrentIndex(index if index >= 0 else 0)
         self._target_combo.blockSignals(False)
+        # blockSignals silenció currentIndexChanged durante la reconstrucción
+        # del combo: hay que sincronizar el worker con el estado final. Se
+        # difiere con singleShot(0) en vez de llamar directo — set_initiator/
+        # set_responder pueden llegar aquí desde varios niveles de señales
+        # anidadas (ConnectWorker en otro hilo -> señal encolada -> señal
+        # directa de MainWindow), y arrancar un QThread nuevo de forma
+        # síncrona en medio de esa cadena colgaba la app (visto en tests:
+        # TestMainWindowWiring se cuelga sin este defer). Diferir al próximo
+        # tick del loop de eventos rompe la anidación y es el patrón estándar
+        # de Qt para esto.
+        QTimer.singleShot(0, self._on_target_changed)
 
     # ------------------------------------------------------------ worker
 
@@ -111,13 +126,19 @@ class TerminalView(QWidget):
         thread.start()
 
     def _stop_worker(self) -> None:
-        with contextlib.suppress(RuntimeError, TypeError):
-            self.send_requested.disconnect()  # no-op si no había nada conectado
         if self._worker is not None:
-            self._worker.stop()
+            with contextlib.suppress(RuntimeError, TypeError):
+                self.send_requested.disconnect()
         if self._thread is not None:
+            # thread.quit() alcanza y no bloquea: para el loop de eventos del
+            # hilo, y sin loop de eventos el QTimer de TerminalWorker deja de
+            # disparar solo (no hace falta pedirle al worker que se detenga a
+            # mano). No usar wait(): un join bloqueante acá (p. ej. desde
+            # closeEvent) puede colgar la ventana entera — confirmado con
+            # hardware simulado (FakeTransport en tests). thread.finished ya
+            # está conectado a deleteLater() en start_worker(), así que el
+            # QThread se limpia solo.
             self._thread.quit()
-            self._thread.wait(1000)
         self._worker = None
         self._thread = None
         self._send_btn.setEnabled(False)
