@@ -9,7 +9,8 @@ import pytest
 from PySide6.QtCore import Qt
 
 import dwm3001c_cli.gui.views.connection_view as connection_view_module
-import dwm3001c_cli.transport.discovery as discovery_module
+import dwm3001c_cli.gui.workers as workers_module
+import dwm3001c_cli.transport.ble_discovery as ble_discovery_module
 from dwm3001c_cli.core.client import DwmCliClient
 from dwm3001c_cli.gui.main_window import MainWindow
 from dwm3001c_cli.gui.views.calibration_view import CalibrationView
@@ -20,6 +21,22 @@ from dwm3001c_cli.transport.discovery import BoardPort
 from fakes import FakeTransport
 
 _LEFT_BUTTON = Qt.MouseButton.LeftButton
+
+
+@pytest.fixture(autouse=True)
+def _drain_qt_events_after_test(qtbot):
+    """Deja correr el loop de eventos tras cada test.
+
+    Los workers de ``gui/workers.py`` (``ScanWorker``, ``ConnectWorker``)
+    piden ``thread.quit()`` de forma asincrónica al terminar; sin darles
+    tiempo a apagarse antes de que ``qtbot`` destruya el widget del test
+    siguiente, quedan hilos Qt huérfanos que después cuelgan por completo
+    un test no relacionado (visto con ``TestMainWindowWiring``, que necesita
+    arrancar su propio ``QThread`` de ``TerminalWorker``).
+    """
+    yield
+    for _ in range(10):
+        qtbot.wait(20)
 
 
 class FakeLink(FakeTransport):
@@ -33,7 +50,7 @@ class FakeLink(FakeTransport):
     def name(self) -> str:
         return self._port_name
 
-    def __enter__(self) -> "FakeLink":
+    def __enter__(self) -> FakeLink:
         self.open()
         return self
 
@@ -100,14 +117,21 @@ class TestConnectionView:
         view = ConnectionView()
         qtbot.addWidget(view)
         boards = [
-            BoardPort(port="COM7", description="desc", serial_number="SN1", interface_hint="nrf-usb")
+            BoardPort(
+                port="COM7", description="desc", serial_number="SN1", interface_hint="nrf-usb"
+            )
         ]
-        monkeypatch.setattr(discovery_module, "find_boards", lambda: boards)
+        monkeypatch.setattr(workers_module, "find_boards", lambda: boards)
+        # find_ble_boards() hace un scan BLE real de 6s por default (import
+        # diferido en ScanWorker.run) — sin mockear, este test golpearía
+        # hardware Bluetooth real, violando la regla de "sin hardware".
+        monkeypatch.setattr(ble_discovery_module, "find_ble_boards", lambda: [])
 
         qtbot.mouseClick(view._scan_button, _LEFT_BUTTON)
         qtbot.waitUntil(lambda: view._initiator_port_combo.count() == 1, timeout=2000)
 
         assert view._initiator_port_combo.itemText(0) == "COM7"
+        qtbot.waitUntil(lambda: len(view._active) == 0, timeout=2000)
 
     def test_connect_initiator_emits_signal_with_working_client(
         self, qtbot, monkeypatch: pytest.MonkeyPatch
@@ -127,6 +151,7 @@ class TestConnectionView:
         client = received[0]
         assert isinstance(client, DwmCliClient)
         assert client.stat().mode == "NONE"
+        qtbot.waitUntil(lambda: len(view._active) == 0, timeout=2000)
 
 
 class TestMainWindowWiring:
@@ -145,6 +170,14 @@ class TestMainWindowWiring:
 
         assert window._calibration_view._initiator_client is not None
         assert window._terminal_view._initiator_transport is link
+
+        # Cierre explícito acá, no solo delegado al teardown automático de
+        # qtbot.addWidget(): con un QThread real de TerminalWorker todavía
+        # vivo, closeEvent() (que lo detiene) corriendo recién en el teardown
+        # de pytest-qt, después de otros tests con hilos propios en la misma
+        # sesión, se volvió intermitente sin este cierre explícito dentro del
+        # cuerpo del test (mismo camino que en uso real).
+        window.close()
 
 
 class TestTerminalView:
