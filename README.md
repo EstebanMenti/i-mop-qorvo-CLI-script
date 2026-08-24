@@ -59,7 +59,39 @@ dwm terminal --port COM7       # Terminal interactivo crudo contra la consola CL
 
 Opciones globales (van antes del subcomando): `--verbose` (logging DEBUG en consola) y `--log-dir` (carpeta de logs, default `logs/`). La mayoría de los subcomandos acepta además `--config archivo.yaml` para fijar sus opciones en un archivo (precedencia: línea de comandos > YAML > valor por defecto); ver `dwm <subcomando> --help` para el detalle de cada uno.
 
-## 5. Documentación
+## 5. Interfaz gráfica de escritorio (`dwm-gui`)
+
+> **Disponible solo en esta rama** (`hardware/ble-bridge-nrf52840`) — no existe en `main`. No hace falta tener las placas conectadas para abrir la ventana; sí hacen falta para usar sus pestañas de Conexión, Terminal, Validar y Calibrar.
+
+Pasos completos desde cero (Windows, PowerShell):
+
+```powershell
+# 1. Clonar el repositorio (si todavía no lo hiciste) y pararse en esta rama
+git clone <url-del-repo>
+cd i-mop-qorvo-CLI-script
+git checkout hardware/ble-bridge-nrf52840
+
+# 2. Crear el entorno virtual (si todavía no existe uno en .venv/)
+python -m venv .venv
+
+# 3. Activar el entorno virtual
+.\.venv\Scripts\Activate.ps1
+
+# 4. Instalar el paquete en modo editable con las dependencias de la GUI
+#    (PySide6 + pyqtgraph). Agregá ",ble" (pip install -e .[gui,ble]) si
+#    además vas a usar el puente Bluetooth nRF52840 como RESPONDER — ver
+#    docs/rama-hardware-ble.md.
+pip install -e .[gui]
+
+# 5. Levantar la interfaz gráfica
+dwm-gui
+```
+
+Si ya tenés el entorno virtual creado y activado (por ejemplo porque ya instalaste el paquete para usar la CLI `dwm`, sección 3), alcanza con repetir el paso 4 para sumar las dependencias de la GUI y correr el paso 5 — no hace falta un entorno nuevo ni volver a clonar nada.
+
+La ventana abre igual sin placas conectadas: podés navegar las cuatro pestañas, y "Escanear placas (USB + BLE)" va a listar lo que detecte en tu PC (vacío si no tenés nada conectado). "Conectar", Terminal, Validar y Calibrar necesitan una placa real para hacer algo.
+
+## 6. Documentación
 
 Toda la documentación está en [docs/](docs/README.md):
 
@@ -74,7 +106,7 @@ Toda la documentación está en [docs/](docs/README.md):
 | [docs/referencias/](docs/referencias/README.md) | Guía verificada de CLI/calibración y documentos del fabricante (Qorvo) |
 | [CLAUDE.md](CLAUDE.md) | Contexto, reglas de programación y convenciones de Git del proyecto |
 
-## 6. Desarrollo
+## 7. Desarrollo
 
 Convenciones completas en [CLAUDE.md](CLAUDE.md). Resumen:
 
