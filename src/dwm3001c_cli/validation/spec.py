@@ -16,6 +16,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from dwm3001c_cli.calibration.sampler import SessionParams
 from dwm3001c_cli.core.client import DwmCliClient
 
 
@@ -232,9 +233,13 @@ def _c4_twr_session(ctx: CheckContext) -> tuple[str, list[str]]:
     assert second is not None  # el runner saltea el check si no hay segunda placa
     second.ensure_mode_none()
     ctx.client.ensure_mode_none()
+    # Mismo SessionParams que dwm calibrate (calibration/sampler.py): ADDR
+    # (ID propio) y PADDR (ID del par) explícitos por rol, no defaults del
+    # firmware — verificado con hardware real (docs/resultados-verificacion-ble.md §7).
+    params = SessionParams()
     # Orden de arranque: primero el responder, después el initiator (guía §4.2).
-    second.start_respf()
-    ctx.client.start_initf()
+    second.start_respf(**params.responder_kwargs())
+    ctx.client.start_initf(**params.initiator_kwargs())
     measurements = ctx.client.read_notifications(duration_s=ctx.ranging_window_s)
     lines = [measurement.raw for measurement in measurements[:10]]
     successes = [

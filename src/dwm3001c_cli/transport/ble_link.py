@@ -151,6 +151,15 @@ class BleTransport:
         self._assembler = LineAssembler()
         self._rx_queue: queue.Queue[str] = queue.Queue()
         self._pending_error: str | None = None
+        # [Bug real, verificado 2026-08-25 contra hardware real] Copias planas
+        # de estado, actualizadas solo desde el hilo dedicado de bleak
+        # (self._thread) — nunca leer self._client.is_connected/.mtu_size
+        # directamente desde otro hilo (p. ej. el QThread de la GUI que llama
+        # read_line()): es un objeto COM/WinRT con afinidad de hilo, y
+        # tocarlo desde otro hilo crashea el proceso entero sin ninguna traza
+        # de Python — confirmado aislando el problema contra hardware real.
+        self._connected = False
+        self._mtu_size: int | None = None
 
     @property
     def name(self) -> str:
@@ -252,7 +261,7 @@ class BleTransport:
                 return self._rx_queue.get(timeout=min(poll_s, max(0.0, remaining)))
             except queue.Empty:
                 pass
-            if self._client is not None and not self._client.is_connected:
+            if self._client is not None and not self._connected:
                 raise TransportError(f"{self.name}: conexión BLE perdida esperando respuesta")
             if time.monotonic() >= deadline:
                 return None
@@ -300,7 +309,7 @@ class BleTransport:
 
     @property
     def mtu_size(self) -> int | None:
-        return None if self._client is None else self._client.mtu_size
+        return self._mtu_size
 
     # ---------------------------------------------------------------- internos
 
@@ -323,7 +332,7 @@ class BleTransport:
     def _ensure_connected(self) -> None:
         if self._loop is None:
             raise TransportError(f"{self.name}: transporte no abierto (llamar open() primero)")
-        if self._client is not None and self._client.is_connected:
+        if self._client is not None and self._connected:
             return
         # [Verificado 2026-08-13] La conexión se cierra sola ~7-8s después de
         # la última actividad; no es un error, es el comportamiento normal de
@@ -337,17 +346,21 @@ class BleTransport:
         await client.connect()
         await client.start_notify(NUS_TX_CHAR_UUID, self._on_notify)
         self._client = client
-        logger.debug("%s: conectado, MTU=%s", self.name, client.mtu_size)
+        self._connected = True
+        self._mtu_size = client.mtu_size
+        logger.debug("%s: conectado, MTU=%s", self.name, self._mtu_size)
 
     async def _disconnect(self) -> None:
         if self._client is None:
             return
         try:
-            if self._client.is_connected:
+            if self._connected:
                 await self._client.stop_notify(NUS_TX_CHAR_UUID)
                 await self._client.disconnect()
         finally:
             self._client = None
+            self._connected = False
+            self._mtu_size = None
 
     async def _send_raw(self, text: str) -> None:
         if self._client is None:
@@ -357,6 +370,10 @@ class BleTransport:
         await self._client.write_gatt_char(NUS_RX_CHAR_UUID, payload, response=False)
 
     def _on_disconnect(self, _client: object) -> None:
+        # Corre en el hilo dedicado de bleak (self._thread), como todo lo que
+        # toca self._client — seguro escribir acá el mismo atributo plano que
+        # lee read_line() desde cualquier otro hilo.
+        self._connected = False
         logger.warning("%s: conexión BLE cerrada", self.name)
 
     def _on_notify(self, _sender: object, data: bytearray) -> None:

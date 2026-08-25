@@ -153,6 +153,30 @@ class TestConnectionView:
         assert client.stat().mode == "NONE"
         qtbot.waitUntil(lambda: len(view._active) == 0, timeout=2000)
 
+    def test_connect_responder_ble_emits_signal_with_working_client(
+        self, qtbot, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        view = ConnectionView()
+        qtbot.addWidget(view)
+        view._responder_ble_radio.setChecked(True)
+        view._responder_ble_combo.addItem("uwb-02 — FD:7A:90:57:CC:9F", "FD:7A:90:57:CC:9F")
+        link = FakeLink("BLE-FD7A9057CC9F", basic_script())
+        monkeypatch.setattr(
+            connection_view_module, "_connect_ble", lambda address: (link, DwmCliClient(link))
+        )
+
+        received: list[object] = []
+        view.responder_connected.connect(lambda transport, client: received.append(client))
+
+        qtbot.mouseClick(view._responder_connect_btn, _LEFT_BUTTON)
+        qtbot.waitUntil(lambda: len(received) == 1, timeout=2000)
+
+        client = received[0]
+        assert isinstance(client, DwmCliClient)
+        assert client.stat().mode == "NONE"
+        assert view._responder_status.text() == "Conectado: BLE-FD7A9057CC9F"
+        qtbot.waitUntil(lambda: len(view._active) == 0, timeout=2000)
+
 
 class TestMainWindowWiring:
     def test_initiator_connection_enables_other_views(

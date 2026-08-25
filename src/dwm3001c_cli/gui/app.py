@@ -27,9 +27,32 @@ def _configure_logging(log_dir: Path = Path("logs")) -> None:
     )
 
 
+def _allow_bleak_sta() -> None:
+    """Evita el crash nativo (sin traza de Python) al conectar por BLE.
+
+    [Bug real, verificado 2026-08-25 contra hardware real] PySide6 inicializa
+    el hilo principal como apartamento COM STA (lo necesita para integrarse
+    con Windows nativo); el backend WinRT de ``bleak`` da por sentado MTA.
+    Sin este ajuste, conectar el RESPONDER por Bluetooth desde la GUI
+    crasheaba el proceso entero en cuanto Windows procesaba actividad de UI
+    real (clics) en simultáneo con la conexión GATT — no reproducible
+    llamando a los mismos métodos sin interacción real de mouse, lo que
+    demoró el diagnóstico. Ver la sección "Windows" de
+    https://bleak.readthedocs.io/en/latest/troubleshooting.html. ``bleak`` es
+    una dependencia opcional (extra ``[ble]``, no ``[gui]``): sin ella
+    instalada, no hay nada que ajustar.
+    """
+    try:
+        from bleak.backends.winrt.util import allow_sta
+    except ImportError:
+        return
+    allow_sta()
+
+
 def main_gui() -> None:
     """Punto de entrada del script ``dwm-gui`` (ver ``pyproject.toml``)."""
     _configure_logging()
+    _allow_bleak_sta()
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
