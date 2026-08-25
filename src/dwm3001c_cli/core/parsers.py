@@ -18,7 +18,11 @@ from typing import Any
 from dwm3001c_cli.core.models import CalKey, ChipId, DeviceInfo, Measurement
 
 # Prefijo del bloque JSON de STAT: "JS" + longitud en 4 dígitos hex + "{...".
-_JS_PREFIX_RE = re.compile(r"^JS[0-9A-Fa-f]{4}(?=\{)")
+# Sin ancla "^": por USB directo, cuando STAT se envía con LISTENER/INITF/RESPF
+# ya corriendo, el eco del comando llega pegado sin separador delante del
+# bloque (p. ej. "STAT\rJS010D{...}", verificado con hardware real fw 1.1.0),
+# igual que el caso ya conocido del bridge UART de J9 (ver send_command).
+_JS_PREFIX_RE = re.compile(r"JS[0-9A-Fa-f]{4}(?=\{)")
 _MODE_RE = re.compile(r"^MODE:\s*(\S+)")
 
 # "clave: 0xVALOR (len: N)" — claves con puntos y underscores (ej. ant0.ch9.ant_delay).
@@ -56,9 +60,12 @@ def parse_stat(lines: list[str]) -> DeviceInfo:
     - Firmware 1.1.0 real: sin línea ``MODE:``, JSON partido en varias líneas y
       ``ok`` final; el modo se deriva de ``Current App``.
 
-    Asume que ``lines`` ya viene sin eco del comando (responsabilidad de
-    :meth:`DwmCliClient.send_command`, incluso cuando el bridge de transporte
-    pega el eco a la primera línea de respuesta sin separador — guía/J9).
+    No asume que ``lines`` viene sin eco del comando: por USB directo, si
+    ``STAT`` se envía con ``LISTENER``/``INITF``/``RESPF`` ya corriendo, puede
+    llegar precedido de salida asíncrona de la app y con el eco pegado sin
+    separador justo antes del bloque JSON (``"STAT\\rJS010D{...}"``, verificado
+    con hardware real). El bloque ``JSxxxx{`` se busca en cualquier posición de
+    la línea, no solo al inicio.
     """
     raw = "\n".join(lines)
     mode: str | None = None
@@ -67,13 +74,15 @@ def parse_stat(lines: list[str]) -> DeviceInfo:
         stripped = line.strip()
         if (match := _MODE_RE.match(stripped)) is not None:
             mode = match.group(1)
-        if js_start is None and _JS_PREFIX_RE.match(stripped) is not None:
+        if js_start is None and _JS_PREFIX_RE.search(stripped) is not None:
             js_start = index
     if js_start is None:
         raise ValueError(f"Salida de STAT sin bloque JSxxxx: {raw!r}")
 
     joined = "".join(line.strip() for line in lines[js_start:])
-    json_text = _JS_PREFIX_RE.sub("", joined, count=1)
+    js_match = _JS_PREFIX_RE.search(joined)
+    assert js_match is not None  # ya lo encontramos línea por línea arriba
+    json_text = joined[js_match.end() :]
     try:
         decoded, _ = json.JSONDecoder().raw_decode(json_text)
     except json.JSONDecodeError as exc:
