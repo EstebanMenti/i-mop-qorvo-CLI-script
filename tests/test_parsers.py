@@ -69,6 +69,60 @@ class TestParseStat:
 
         assert parse_stat(lines).mode == "INITF"
 
+    def test_pegged_echo_after_async_app_output(self) -> None:
+        # [Verificado 2026-08-25, hardware real, USB directo] Al enviar STAT
+        # con LISTENER ya corriendo, la salida asíncrona de la app gana la
+        # detección de eco de send_command (que solo mira la primera línea);
+        # el eco real de STAT llega después, pegado sin separador al bloque
+        # JSON: "STAT\rJS010D{...}".
+        lines = [
+            "Found non-AOA chip. PDoA is not available.",
+            "Listener Top Application: Started",
+            'STAT\rJS010D{"Info":{',
+            '"Device":"DWM3001CDK - DW3_QM33_SDK - FreeRTOS",',
+            '"Current App":"LISTENER",',
+            '"Version":"1.1.0",',
+            '"Build":"Aug 10 2026 16:03:38",',
+            '"Apps":["LISTENER","RESPF","INITF"],',
+            '"Driver":"DW3XXX Device Driver Version 08.19.02",',
+            '"UWB stack":"R12.7.0-405-gb33c5c4272"}}',
+            "",
+            "ok",
+        ]
+
+        info = parse_stat(lines)
+
+        assert info.current_app == "LISTENER"
+        assert info.mode == "LISTENER"
+
+    def test_pegged_echo_after_session_notifications(self) -> None:
+        # [Verificado 2026-08-25, hardware real, USB directo] Mismo caso que
+        # el anterior pero tras una sesión INITF/RESPF activa: antes del eco
+        # pegado llegan varias notificaciones SESSION_STATUS_NTF/SESSION_INFO_NTF.
+        lines = [
+            'SESSION_STATUS_NTF: {state="INIT", reason="State change"}',
+            'SESSION_STATUS_NTF: {state="IDLE", reason="State change"}',
+            'SESSION_STATUS_NTF: {state="ACTIVE", reason="State change"}',
+            "SESSION_INFO_NTF: {session_handle=1, sequence_number=0, block_index=0,"
+            " n_measurements=1",
+            '\r [mac_address=0x0001, status="RX_TIMEOUT"]}',
+            'STAT\rJS010A{"Info":{',
+            '"Device":"DWM3001CDK - DW3_QM33_SDK - FreeRTOS",',
+            '"Current App":"INITF",',
+            '"Version":"1.1.0",',
+            '"Build":"Aug 10 2026 16:03:38",',
+            '"Apps":["LISTENER","RESPF","INITF"],',
+            '"Driver":"DW3XXX Device Driver Version 08.19.02",',
+            '"UWB stack":"R12.7.0-405-gb33c5c4272"}}',
+            "",
+            "ok",
+        ]
+
+        info = parse_stat(lines)
+
+        assert info.current_app == "INITF"
+        assert info.mode == "INITF"
+
     def test_output_without_js_block_raises(self) -> None:
         with pytest.raises(ValueError, match="JSxxxx"):
             parse_stat(["MODE: NONE", "basura"])
