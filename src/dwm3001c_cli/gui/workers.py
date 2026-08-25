@@ -18,7 +18,6 @@ from dwm3001c_cli.calibration.autocal import (
     autocalibrate,
 )
 from dwm3001c_cli.core.client import DwmCliClient
-from dwm3001c_cli.core.errors import Dwm3001cError
 from dwm3001c_cli.core.models import ValidationResult
 from dwm3001c_cli.transport.discovery import BoardPort, find_boards
 from dwm3001c_cli.transport.serial_link import Transport
@@ -41,7 +40,7 @@ class ScanWorker(QObject):
     def run(self) -> None:
         try:
             usb_boards = find_boards()
-        except Dwm3001cError as exc:
+        except Exception as exc:  # ver nota en ConnectWorker.run()
             self.failed.emit(str(exc))
             return
         ble_boards: list[BleBoardInfo] = []
@@ -51,7 +50,7 @@ class ScanWorker(QObject):
             ble_boards = find_ble_boards()
         except ImportError:
             pass  # extra [ble] no instalado: la GUI sigue funcional solo con USB
-        except Dwm3001cError:
+        except Exception:
             pass  # sin adaptador BLE o escaneo fallido: no bloquea el resto
         self.finished.emit(usb_boards, ble_boards)
 
@@ -76,7 +75,15 @@ class ConnectWorker(QObject):
     def run(self) -> None:
         try:
             transport, client = self._factory()
-        except Dwm3001cError as exc:
+        except Exception as exc:
+            # [Bug real, verificado 2026-08-25 contra hardware real] Antes
+            # solo atrapaba Dwm3001cError: un OSError real de bleak/WinRT
+            # (p. ej. "se cerró el objeto" cuando la sesión GATT se cae a
+            # mitad del descubrimiento de servicios) se escapaba sin
+            # atraparse, el hilo terminaba sin emitir connected ni failed, y
+            # el botón "Conectar" quedaba trabado en "Conectando..." para
+            # siempre, sin ningún mensaje de error. Un worker en background
+            # nunca debe dejar escapar una excepción en silencio.
             self.failed.emit(str(exc))
             return
         self.connected.emit(transport, client)
@@ -112,7 +119,7 @@ class TerminalWorker(QObject):
     def _poll(self) -> None:
         try:
             line = self._transport.read_line(0.2)
-        except Dwm3001cError as exc:
+        except Exception as exc:
             self.line_received.emit(f"[error] {exc}")
             if self._timer is not None:
                 self._timer.stop()
@@ -124,7 +131,7 @@ class TerminalWorker(QObject):
     def send(self, line: str) -> None:
         try:
             self._transport.write_line(line)
-        except Dwm3001cError as exc:
+        except Exception as exc:
             self.line_received.emit(f"[error] {exc}")
 
 
@@ -155,7 +162,7 @@ class ValidationWorker(QObject):
                 on_result=self.check_completed.emit,
             )
             device = self._client.stat()
-        except Dwm3001cError as exc:
+        except Exception as exc:
             self.failed.emit(str(exc))
             return
         self.finished.emit(results, device)
@@ -192,7 +199,7 @@ class CalibrationWorker(QObject):
                 config=self._config,
                 on_iteration=self.iteration_completed.emit,
             )
-        except Dwm3001cError as exc:
+        except Exception as exc:
             self.failed.emit(str(exc))
             return
         self.finished.emit(report)
