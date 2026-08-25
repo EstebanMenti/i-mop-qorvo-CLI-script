@@ -125,8 +125,14 @@ class TestFullSuite:
         assert len(results) == 1
         assert results[0].passed
         assert "3/3" in results[0].detail
-        assert "RESPF" in responder_transport.sent
-        assert "INITF" in initiator_transport.sent
+        # Mismo SessionParams que dwm calibrate: ADDR (ID propio) y PADDR (ID
+        # del par) explícitos por rol, no defaults del firmware.
+        respf_sent = next(cmd for cmd in responder_transport.sent if cmd.startswith("RESPF"))
+        initf_sent = next(cmd for cmd in initiator_transport.sent if cmd.startswith("INITF"))
+        assert "-ADDR=1" in respf_sent
+        assert "-PADDR=0" in respf_sent
+        assert "-ADDR=0" in initf_sent
+        assert "-PADDR=1" in initf_sent
 
     def test_check_ids_filters_suite(self) -> None:
         client, _ = make_full_pass_client()
