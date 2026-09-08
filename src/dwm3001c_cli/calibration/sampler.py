@@ -2,6 +2,9 @@
 
 Orquesta ``RESPF`` + ``INITF``, recolecta mediciones del initiator y calcula
 estadísticas. Detiene ambas placas siempre, incluso ante error.
+
+Para el banco donde el initiator está detrás del puente BLE nRF52840 (que no
+reenvía notificaciones espontáneas), ver ``poll_sampler.py``.
 """
 
 from __future__ import annotations
@@ -9,6 +12,7 @@ from __future__ import annotations
 import logging
 import statistics
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from dwm3001c_cli.core.client import DwmCliClient
@@ -105,6 +109,29 @@ def collect_samples(
         initiator.ensure_mode_none()
         responder.ensure_mode_none()
 
+    stats = build_stats_or_fail(successes, received, n_samples, limit)
+    logger.info(
+        "Muestreo: %d/%d SUCCESS, media %.1f cm, desvío %.1f cm",
+        stats.n_success,
+        stats.n_requested,
+        stats.mean_cm,
+        stats.std_cm,
+    )
+    return stats
+
+
+def build_stats_or_fail(
+    successes: Sequence[int], received: int, n_samples: int, limit: float
+) -> RangingStats:
+    """Valida la calidad del enlace y construye las estadísticas del muestreo.
+
+    Compartido por :func:`collect_samples` y el sampler por polling de
+    ``poll_sampler.py``: mismos umbrales y mismos mensajes de error.
+
+    Raises:
+        CalibrationError: sin muestras SUCCESS, o éxito/tasa por debajo del 50 %
+            (enlace malo: no tiene sentido calibrar).
+    """
     if not successes:
         raise CalibrationError(
             f"Sin mediciones SUCCESS en {limit:.0f} s "
@@ -117,8 +144,7 @@ def collect_samples(
             f"(tasa {success_rate:.0%} sobre {received} notificaciones). "
             "Revisar montaje antes de calibrar."
         )
-
-    stats = RangingStats(
+    return RangingStats(
         n_requested=n_samples,
         n_received=received,
         n_success=len(successes),
@@ -127,11 +153,3 @@ def collect_samples(
         min_cm=min(successes),
         max_cm=max(successes),
     )
-    logger.info(
-        "Muestreo: %d/%d SUCCESS, media %.1f cm, desvío %.1f cm",
-        stats.n_success,
-        stats.n_requested,
-        stats.mean_cm,
-        stats.std_cm,
-    )
-    return stats

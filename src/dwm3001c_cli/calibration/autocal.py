@@ -28,7 +28,26 @@ from pathlib import Path
 from dwm3001c_cli.calibration.sampler import SessionParams, collect_samples
 from dwm3001c_cli.core.client import DwmCliClient
 from dwm3001c_cli.core.errors import CalibrationError
-from dwm3001c_cli.core.models import RangingStats
+from dwm3001c_cli.core.models import Measurement, RangingStats
+
+# Muestreador inyectable: firma compatible con ``collect_samples`` (USB-USB) y
+# ``collect_samples_polled`` (initiator detrás del puente BLE). Recibe siempre
+# ``on_measurement``; los samplers que no lo usan lo aceptan y lo ignoran.
+SamplerFn = Callable[..., RangingStats]
+
+
+def _default_sampler(
+    initiator: DwmCliClient,
+    responder: DwmCliClient,
+    *,
+    n_samples: int,
+    session_params: SessionParams,
+    on_measurement: Callable[[Measurement], None] | None = None,
+) -> RangingStats:
+    """Sampler clásico (lectura pasiva de notificaciones, banco USB-USB)."""
+    del on_measurement  # collect_samples no emite mediciones individuales
+    return collect_samples(initiator, responder, n_samples=n_samples, session_params=session_params)
+
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +108,8 @@ def autocalibrate(
     config: AutocalConfig | None = None,
     report_dir: Path = Path("reports"),
     on_iteration: Callable[[CalibrationIteration], None] | None = None,
+    on_measurement: Callable[[Measurement], None] | None = None,
+    sampler: SamplerFn | None = None,
 ) -> CalibrationReport:
     """Calibra el retardo de antena de ``device`` contra ``reference``.
 
@@ -100,6 +121,16 @@ def autocalibrate(
             apenas se completa su medición (antes de decidir la próxima corrección);
             permite mostrar progreso en vivo (p. ej. la CLI, plan §7) sin acoplar
             este módulo a ninguna capa de presentación.
+        on_measurement: callback opcional invocado con cada :class:`Measurement`
+            recibida durante el muestreo (incluidas las fallidas); para mostrar
+            la distancia medida en vivo. Solo tiene efecto con un sampler que
+            lo emita (``collect_samples_polled``); el sampler por defecto lo
+            ignora.
+        sampler: muestreador inyectable; por defecto
+            :func:`~dwm3001c_cli.calibration.sampler.collect_samples` (lectura
+            pasiva de notificaciones, initiator por USB). Para el initiator
+            detrás del puente BLE pasar
+            :func:`~dwm3001c_cli.calibration.poll_sampler.collect_samples_polled`.
 
     Raises:
         CalibrationError: enlace pobre, sensibilidad no medible, salvaguarda
@@ -129,8 +160,16 @@ def autocalibrate(
     sensitivity: float | None = None
     current_delay = initial_delay
 
+    effective_sampler = sampler if sampler is not None else _default_sampler
+
     def measure(correction: int | None) -> tuple[float, RangingStats]:
-        stats = collect_samples(reference, device, n_samples=cfg.n_samples, session_params=params)
+        stats = effective_sampler(
+            reference,
+            device,
+            n_samples=cfg.n_samples,
+            session_params=params,
+            on_measurement=on_measurement,
+        )
         error = stats.mean_cm - real_cm
         iterations.append(
             CalibrationIteration(
