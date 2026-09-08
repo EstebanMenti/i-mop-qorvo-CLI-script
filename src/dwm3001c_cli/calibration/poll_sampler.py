@@ -45,6 +45,13 @@ DEFAULT_POLL_CMD = "THREAD"
 # varios seguidos indican un enlace roto de verdad.
 MAX_CONSECUTIVE_TIMEOUTS = 10
 
+# Piso absoluto de muestras SUCCESS para aceptar una colección parcial.
+# [Verificado 2026-09-08, hardware real] Los puentes BLE pueden estrangular la
+# entrega de notificaciones a mitad de sesión (caída/reconexión del GATT): la
+# ventana de muestreo venció con 33/100 SUCCESS pero tasa 94% — datos sanos
+# que antes se descartaban y abortaban la calibración completa.
+_MIN_ACCEPTABLE_SAMPLES = 30
+
 
 def extract_measurements(lines: Iterable[str], source: str) -> list[Measurement]:
     """Extrae las :class:`Measurement` de las líneas de una respuesta.
@@ -166,7 +173,30 @@ def collect_samples_polled(
         initiator.ensure_mode_none()
         responder.ensure_mode_none()
 
-    stats = build_stats_or_fail(successes, received, n_samples, limit)
+    if len(successes) < n_samples:
+        # [Verificado 2026-09-08, hardware real] Los puentes BLE pueden
+        # estrangular la entrega de notificaciones a mitad de sesión (caídas
+        # y reconexiones del GATT): la ventana vence con pocas notificaciones
+        # pero tasa de éxito alta (caso real: 33 SUCCESS, tasa 94%). Con un
+        # piso absoluto de muestras sanas se acepta la muestra parcial en
+        # vez de abortar la calibración.
+        logger.warning(
+            "Ventana de muestreo vencida con muestra parcial en %s: "
+            "%d/%d SUCCESS sobre %d notificaciones — se acepta si supera el "
+            "piso de %d muestras.",
+            initiator.name,
+            len(successes),
+            n_samples,
+            received,
+            _MIN_ACCEPTABLE_SAMPLES,
+        )
+    stats = build_stats_or_fail(
+        successes,
+        received,
+        n_samples,
+        limit,
+        min_samples=min(_MIN_ACCEPTABLE_SAMPLES, n_samples),
+    )
     logger.info(
         "Muestreo por polling: %d/%d SUCCESS, media %.1f cm, desvío %.1f cm",
         stats.n_success,

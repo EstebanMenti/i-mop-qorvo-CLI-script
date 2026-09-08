@@ -71,11 +71,22 @@ class PollInitiator(FakeTransport):
     """Initiator simulado detrás del puente BLE: NO emite notificaciones
     espontáneas; acumula y las entrega recién con la respuesta de ``THREAD``."""
 
-    def __init__(self, world: TwrWorld, per_poll: int = 5, silent_polls: bool = False) -> None:
+    def __init__(
+        self,
+        world: TwrWorld,
+        per_poll: int = 5,
+        silent_polls: bool = False,
+        max_total: int | None = None,
+    ) -> None:
         super().__init__()
         self.world = world
         self.per_poll = per_poll
         self.silent_polls = silent_polls
+        # Simula el estrangulamiento del puente BLE: entrega como máximo
+        # ``max_total`` notificaciones en toda la sesión y después calla
+        # [caso real 2026-09-08: ventana vencida con 33/100 SUCCESS, tasa 94%].
+        self.max_total = max_total
+        self._delivered = 0
         self.session_active = False
 
     def write_line(self, line: str) -> None:
@@ -92,15 +103,21 @@ class PollInitiator(FakeTransport):
         elif upper == "THREAD":
             if self.silent_polls:
                 return  # el puente se traga la respuesta: silencio → timeout
+            count = 0
             if self.session_active:
-                for _ in range(self.per_poll):
-                    self.world.sequence += 1
-                    n = self.world.sequence
-                    if self.world.fail_all:
-                        one_line = measurement_line(n, "RX_TIMEOUT", None)
-                    else:
-                        one_line = measurement_line(n, "SUCCESS", self.world.reported_cm())
-                    self._pending.extend(split_notification(one_line))
+                if self.max_total is None:
+                    count = self.per_poll
+                else:
+                    count = min(self.per_poll, self.max_total - self._delivered)
+            for _ in range(count):
+                self._delivered += 1
+                self.world.sequence += 1
+                n = self.world.sequence
+                if self.world.fail_all:
+                    one_line = measurement_line(n, "RX_TIMEOUT", None)
+                else:
+                    one_line = measurement_line(n, "SUCCESS", self.world.reported_cm())
+                self._pending.extend(split_notification(one_line))
             self._pending.append("ok")
 
 
@@ -130,8 +147,16 @@ class SimResponder(FakeTransport):
                 self._pending.extend(["", f"Please enter a valid key: {parts[1]}", "KO"])
 
 
-def make_pair(world: TwrWorld) -> tuple[DwmCliClient, DwmCliClient, PollInitiator, SimResponder]:
-    initiator_transport = PollInitiator(world)
+def make_pair(
+    world: TwrWorld,
+    *,
+    per_poll: int = 5,
+    silent_polls: bool = False,
+    max_total: int | None = None,
+) -> tuple[DwmCliClient, DwmCliClient, PollInitiator, SimResponder]:
+    initiator_transport = PollInitiator(
+        world, per_poll=per_poll, silent_polls=silent_polls, max_total=max_total
+    )
     responder_transport = SimResponder(world)
     initiator = DwmCliClient(initiator_transport, command_timeout_s=0.2, quiet_period_s=0.05)
     responder = DwmCliClient(responder_transport, command_timeout_s=0.2, quiet_period_s=0.05)
@@ -215,6 +240,29 @@ class TestCollectSamplesPolled:
                 n_samples=10,
                 max_consecutive_timeouts=3,
                 poll_interval_s=0.0,
+            )
+
+    def test_partial_healthy_sample_is_accepted(self) -> None:
+        # Caso real 2026-09-08: el puente BLE estranguló la entrega y la
+        # ventana venció con 33/100 SUCCESS (tasa 94%): la muestra parcial
+        # sana debe aceptarse en vez de abortar la calibración.
+        world = TwrWorld(real_cm=200.0, delay=16439, ideal_delay=16439)
+        initiator, responder, _, _ = make_pair(world, max_total=33)
+
+        stats = collect_samples_polled(
+            initiator, responder, n_samples=100, timeout_s=2.0, poll_interval_s=0.0
+        )
+
+        assert stats.n_success == 33
+        assert stats.mean_cm == pytest.approx(200.0)
+
+    def test_partial_poor_sample_still_rejected(self) -> None:
+        world = TwrWorld(real_cm=200.0, delay=16439, ideal_delay=16439)
+        initiator, responder, _, _ = make_pair(world, max_total=10)
+
+        with pytest.raises(CalibrationError, match="Enlace pobre"):
+            collect_samples_polled(
+                initiator, responder, n_samples=100, timeout_s=1.0, poll_interval_s=0.0
             )
 
 

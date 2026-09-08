@@ -121,24 +121,42 @@ def collect_samples(
 
 
 def build_stats_or_fail(
-    successes: Sequence[int], received: int, n_samples: int, limit: float
+    successes: Sequence[int],
+    received: int,
+    n_samples: int,
+    limit: float,
+    *,
+    min_samples: int | None = None,
+    min_rate_pct: float = 50.0,
 ) -> RangingStats:
     """Valida la calidad del enlace y construye las estadísticas del muestreo.
 
     Compartido por :func:`collect_samples` y el sampler por polling de
     ``poll_sampler.py``: mismos umbrales y mismos mensajes de error.
 
+    Args:
+        min_samples: mínimo absoluto de muestras SUCCESS para aceptar. Default:
+            la mitad de ``n_samples``. El sampler por polling lo baja
+            ([verificado 2026-09-08, hardware real] los puentes BLE pueden
+            estrangular la entrega de notificaciones a mitad de sesión — en un
+            banco real se venció la ventana con 33 SUCCESS y tasa 94%, datos
+            perfectamente útiles para calibrar) a cambio de exigir un piso
+            absoluto de muestras.
+        min_rate_pct: tasa mínima de SUCCESS sobre las notificaciones recibidas.
+
     Raises:
-        CalibrationError: sin muestras SUCCESS, o éxito/tasa por debajo del 50 %
+        CalibrationError: sin muestras SUCCESS, o menos de ``min_samples``
+            SUCCESS, o tasa por debajo de ``min_rate_pct``
             (enlace malo: no tiene sentido calibrar).
     """
+    required = min_samples if min_samples is not None else n_samples / 2
     if not successes:
         raise CalibrationError(
             f"Sin mediciones SUCCESS en {limit:.0f} s "
             f"({received} notificaciones recibidas). Revisar el enlace entre placas."
         )
     success_rate = len(successes) / received
-    if len(successes) < n_samples / 2 or success_rate < 0.5:
+    if len(successes) < required or success_rate < min_rate_pct / 100:
         raise CalibrationError(
             f"Enlace pobre: {len(successes)}/{n_samples} muestras SUCCESS "
             f"(tasa {success_rate:.0%} sobre {received} notificaciones). "
