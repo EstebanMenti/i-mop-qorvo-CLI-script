@@ -7,18 +7,24 @@ from __future__ import annotations
 
 import pytest
 from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QMessageBox
 
+import dwm3001c_cli.core.client as client_module
 import dwm3001c_cli.gui.views.connection_view as connection_view_module
 import dwm3001c_cli.gui.workers as workers_module
 import dwm3001c_cli.transport.ble_discovery as ble_discovery_module
+import dwm3001c_cli.transport.ble_link as ble_link_module
 from dwm3001c_cli.core.client import DwmCliClient
 from dwm3001c_cli.gui.main_window import MainWindow
+from dwm3001c_cli.gui.views.ble_calibration_view import BleCalibrationView
 from dwm3001c_cli.gui.views.calibration_view import CalibrationView
 from dwm3001c_cli.gui.views.connection_view import ConnectionView
 from dwm3001c_cli.gui.views.terminal_view import TerminalView
 from dwm3001c_cli.gui.views.validation_view import ValidationView
+from dwm3001c_cli.transport.ble_discovery import BleBoardInfo
 from dwm3001c_cli.transport.discovery import BoardPort
 from fakes import FakeTransport
+from test_poll_sampler import PollInitiator, SimResponder, TwrWorld
 
 _LEFT_BUTTON = Qt.MouseButton.LeftButton
 
@@ -227,3 +233,99 @@ class TestCalibrationView:
         view.set_initiator(initiator_client)
 
         assert view._run_btn.isEnabled() is False
+
+
+def ble_devices() -> list[BleBoardInfo]:
+    return [
+        BleBoardInfo(address="AA:AA:AA:AA:AA:01", name="uwb-01", rssi=-50),
+        BleBoardInfo(address="AA:AA:AA:AA:AA:02", name="uwb-02", rssi=-60),
+        BleBoardInfo(address="AA:AA:AA:AA:AA:03", name="telefono", rssi=-70),
+    ]
+
+
+def fake_ble_scan(monkeypatch: pytest.MonkeyPatch, devices: list[BleBoardInfo]) -> None:
+    """Reemplaza el escaneo BLE real (tocaría adaptador Bluetooth) por una lista fija."""
+    monkeypatch.setattr(ble_discovery_module, "find_ble_devices", lambda timeout_s=6.0: devices)
+
+
+class TestBleCalibrationView:
+    def test_scan_lists_all_devices_and_filter_narrows(
+        self, qtbot, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        view = BleCalibrationView()
+        qtbot.addWidget(view)
+        fake_ble_scan(monkeypatch, ble_devices())
+
+        assert view._run_btn.isEnabled() is False
+
+        qtbot.mouseClick(view._scan_btn, _LEFT_BUTTON)
+        qtbot.waitUntil(lambda: view._device_list.count() == 3, timeout=2000)
+
+        # Preselección: primero INITIATOR, segundo RESPONDER (a calibrar).
+        assert view._initiator_combo.count() == 3
+        assert view._run_btn.isEnabled() is True
+        assert "uwb-02" in view._dut_label.text()
+
+        # El filtro acota la lista Y los combos por substring.
+        view._filter_edit.setText("uwb")
+        assert view._device_list.count() == 2
+        assert view._initiator_combo.count() == 2
+
+        view._filter_edit.setText("telefono")
+        assert view._device_list.count() == 1
+        assert view._initiator_combo.count() == 1
+
+    def test_run_requires_two_distinct_devices(
+        self, qtbot, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        view = BleCalibrationView()
+        qtbot.addWidget(view)
+        fake_ble_scan(monkeypatch, ble_devices())
+
+        qtbot.mouseClick(view._scan_btn, _LEFT_BUTTON)
+        qtbot.waitUntil(lambda: view._initiator_combo.count() == 3, timeout=2000)
+        assert view._run_btn.isEnabled() is True
+
+        # Mismo dispositivo en ambos roles: no se puede calibrar.
+        view._dut_combo.setCurrentIndex(view._initiator_combo.currentIndex())
+        assert view._run_btn.isEnabled() is False
+        assert "distintos" in view._dut_label.text()
+
+    def test_full_calibration_flow_reports_status_and_live_distance(
+        self, qtbot, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Física simulada: delay de fábrica 64 unidades bajo el ideal → error
+        # ≈ +30 cm; la calibración debe converger al ideal.
+        world = TwrWorld(real_cm=200.0, delay=16375, ideal_delay=16439)
+        initiator_transport = PollInitiator(world)
+        responder_transport = SimResponder(world)
+        fake_ble_scan(monkeypatch, ble_devices()[:2])
+        # El worker abre los BleTransport dentro de run(): se reemplaza la clase
+        # por los transportes falsos según la dirección elegida.
+        monkeypatch.setattr(
+            ble_link_module,
+            "BleTransport",
+            lambda address: initiator_transport if address.endswith("01") else responder_transport,
+        )
+        monkeypatch.setattr(client_module, "_STOP_SETTLE_S", 0.0)
+        monkeypatch.setattr(
+            QMessageBox,
+            "question",
+            staticmethod(lambda *args, **kwargs: QMessageBox.StandardButton.Yes),
+        )
+
+        view = BleCalibrationView()
+        qtbot.addWidget(view)
+        qtbot.mouseClick(view._scan_btn, _LEFT_BUTTON)
+        qtbot.waitUntil(lambda: view._run_btn.isEnabled(), timeout=2000)
+        view._samples_spin.setValue(10)
+
+        qtbot.mouseClick(view._run_btn, _LEFT_BUTTON)
+        qtbot.waitUntil(lambda: "Calibración terminada" in view._status_label.text(), timeout=30000)
+
+        assert "16375" in view._status_label.text()
+        assert "16442" in view._status_label.text()  # ideal 16439 ± 5 (tolerancia del bucle)
+        assert "Distancia medida:" in view._live_label.text()
+        assert "delay 16375 ->" in view._log.toPlainText()
+        assert not view.is_running
+        assert view._run_btn.isEnabled() is True

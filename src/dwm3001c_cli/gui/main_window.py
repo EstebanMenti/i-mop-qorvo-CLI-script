@@ -1,4 +1,5 @@
-"""Ventana principal: pestañas Conexión / Terminal / Validar / Calibrar."""
+"""Ventana principal: pestañas Conexión / Terminal / Validar / Calibrar /
+Calibración BLE."""
 
 from __future__ import annotations
 
@@ -9,6 +10,7 @@ from PySide6.QtWidgets import QMainWindow, QTabWidget
 
 from dwm3001c_cli.core.client import DwmCliClient
 from dwm3001c_cli.core.errors import Dwm3001cError
+from dwm3001c_cli.gui.views.ble_calibration_view import BleCalibrationView
 from dwm3001c_cli.gui.views.calibration_view import CalibrationView
 from dwm3001c_cli.gui.views.connection_view import ConnectionView
 from dwm3001c_cli.gui.views.terminal_view import TerminalView
@@ -37,6 +39,7 @@ class MainWindow(QMainWindow):
         self._terminal_view = TerminalView()
         self._validation_view = ValidationView()
         self._calibration_view = CalibrationView()
+        self._ble_calibration_view = BleCalibrationView()
 
         self._connection_view.initiator_connected.connect(self._on_initiator_connected)
         self._connection_view.responder_connected.connect(self._on_responder_connected)
@@ -46,6 +49,7 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._terminal_view, "Terminal")
         tabs.addTab(self._validation_view, "Validar")
         tabs.addTab(self._calibration_view, "Calibrar")
+        tabs.addTab(self._ble_calibration_view, "Calibración BLE")
         self.setCentralWidget(tabs)
 
     def _on_initiator_connected(self, transport: Transport, client: DwmCliClient) -> None:
@@ -61,6 +65,15 @@ class MainWindow(QMainWindow):
         self._calibration_view.set_responder(client)
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if self._ble_calibration_view.is_running:
+            # El worker cierra sus propios transportes BLE al terminar (finally);
+            # si el usuario cierra la ventana a mitad de una calibración, se le
+            # avisa en el log: la ventana se cierra igual y el QThread muere con
+            # el proceso, sin dejar transportes colgados.
+            logger.warning(
+                "Cierre con una calibración BLE en curso: los transportes se "
+                "cerrarán al terminar el worker."
+            )
         self._terminal_view.stop()
         for transport in (self._initiator_transport, self._responder_transport):
             if transport is None:
