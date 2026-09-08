@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import pytest
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QMessageBox
 
 import dwm3001c_cli.core.client as client_module
@@ -15,7 +16,9 @@ import dwm3001c_cli.gui.workers as workers_module
 import dwm3001c_cli.transport.ble_discovery as ble_discovery_module
 import dwm3001c_cli.transport.ble_link as ble_link_module
 from dwm3001c_cli.core.client import DwmCliClient
+from dwm3001c_cli.core.models import ValidationResult
 from dwm3001c_cli.gui.main_window import MainWindow
+from dwm3001c_cli.gui.models import ValidationResultsModel
 from dwm3001c_cli.gui.views.ble_calibration_view import BleCalibrationView
 from dwm3001c_cli.gui.views.calibration_view import CalibrationView
 from dwm3001c_cli.gui.views.connection_view import ConnectionView
@@ -116,6 +119,44 @@ class TestValidationView:
         view.set_initiator(initiator_client)
 
         assert view._run_btn.isEnabled() is True
+
+
+class TestValidationResultsModel:
+    @staticmethod
+    def _result(command: str, *, passed: bool, detail: str = "ok") -> ValidationResult:
+        return ValidationResult(
+            command=command,
+            sent="X",
+            passed=passed,
+            detail=detail,
+            response_lines=(),
+            duration_s=1.0,
+        )
+
+    def test_device_column_shows_primary_and_both_for_c4(self, qtbot) -> None:
+        model = ValidationResultsModel()
+        model.start_run("COM7", "BLE-CCEBFE5BC5E9")
+        model.add_result(self._result("A3 STAT", passed=True))
+        model.add_result(self._result("C4 Sesión TWR (2 placas)", passed=True))
+
+        assert model.data(model.index(0, 1)) == "COM7"
+        assert model.data(model.index(1, 1)) == "COM7 + BLE-CCEBFE5BC5E9"
+
+    def test_status_cell_colors_pass_fail_skip(self, qtbot) -> None:
+        model = ValidationResultsModel()
+        model.start_run("COM7")
+        model.add_result(self._result("A3 STAT", passed=True))
+        model.add_result(self._result("A5 DECAID", passed=False, detail="boom"))
+        model.add_result(
+            self._result("C4 Sesión TWR (2 placas)", passed=True, detail="SKIP: sin segunda placa")
+        )
+
+        assert model.data(model.index(0, 2)) == "PASS"
+        assert model.data(model.index(1, 2)) == "FAIL"
+        assert model.data(model.index(2, 2)) == "SKIP"
+        assert model.data(model.index(0, 2), Qt.ItemDataRole.ForegroundRole) == QColor("#1a7f37")
+        assert model.data(model.index(1, 2), Qt.ItemDataRole.ForegroundRole) == QColor("#c62828")
+        assert model.data(model.index(2, 2), Qt.ItemDataRole.ForegroundRole) == QColor("#6b7280")
 
 
 class TestConnectionView:

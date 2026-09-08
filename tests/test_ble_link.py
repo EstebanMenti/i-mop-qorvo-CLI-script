@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 
 import pytest
@@ -146,6 +147,63 @@ class TestReadLine:
 
         with transport:
             assert transport.read_line(0.1) is None
+
+    def test_reconnects_when_bridge_drops_mid_command(self) -> None:
+        # [Bug real, 2026-09-08, hardware real] El puente cierra la conexión
+        # GATT mientras se espera la respuesta de un comando (comportamiento
+        # normal de este puente); read_line() antes levantaba
+        # "conexión BLE perdida esperando respuesta" y mataba la
+        # calibración/validación en curso. Ahora reconecta y sigue esperando.
+        fake = FakeBleakClient(ADDRESS)
+        transport, client = make_transport(fake)
+
+        with transport:
+            client.simulate_disconnect()
+            assert client._notify_callback is not None
+
+            # La respuesta llega recién después de la reconexión (el módulo
+            # Qorvo acumula notificaciones mientras el puente está caído).
+            def deliver_backlog() -> None:
+                assert client._notify_callback is not None
+                client._notify_callback(None, bytearray(b"ok\r\n"))
+
+            timer = threading.Timer(0.3, deliver_backlog)
+            timer.start()
+            try:
+                line = transport.read_line(3.0)
+                assert client.is_connected  # reconectado antes de salir del with
+            finally:
+                timer.join()
+
+        assert line == "ok"
+
+    def test_raises_after_failed_reconnect_attempts(self) -> None:
+        # Si la reconexión falla (puente apagado, fuera de alcance...), el
+        # error se propaga en vez de colgar.
+        client = FakeBleakClient(ADDRESS)
+        calls: list[int] = []
+
+        def factory(
+            address: str, disconnected_callback: Callable[[object], None] | None = None
+        ) -> FakeBleakClient:
+            calls.append(1)
+            if len(calls) == 1:  # primera conexión (open)
+                client._disconnected_callback = disconnected_callback
+                return client
+            return FakeBleakClient(ADDRESS, fail_connect=True)  # reconexión fallida
+
+        transport = BleTransport(
+            ADDRESS,
+            power_on_settle_s=0.0,
+            power_drain_s=0.05,
+            connect_timeout_s=1.0,
+            _client_factory=factory,
+        )
+        with transport:
+            client.simulate_disconnect()
+            with pytest.raises(TransportError):
+                transport.read_line(2.0)
+        assert len(calls) == 2  # open + un intento de reconexión fallido
 
 
 class TestPower:

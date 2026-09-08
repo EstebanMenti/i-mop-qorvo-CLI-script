@@ -61,17 +61,29 @@ class ValidationView(QWidget):
         self._run_btn.setEnabled(ready)
         if not ready:
             return
+        assert self._initiator_client is not None
         second = (
-            " + RESPONDER (habilita el check C4, sesión TWR real)" if self._responder_client else ""
+            f"; el check C4 usa además RESPONDER ({self._responder_client.name})"
+            if self._responder_client is not None
+            else ""
         )
-        self._status_label.setText(f"Listo: INITIATOR{second}")
+        self._status_label.setText(
+            f"Listo: se validará INITIATOR ({self._initiator_client.name}){second}"
+        )
 
     def _on_run_clicked(self) -> None:
         if self._initiator_client is None:
             return
+        assert self._initiator_client is not None
+        primary = self._initiator_client.name
+        second = self._responder_client.name if self._responder_client is not None else None
+        self._model.start_run(primary, second)
         self._model.clear()
         self._run_btn.setEnabled(False)
-        self._status_label.setText("Corriendo...")
+        running = f"Validando {primary}"
+        if second is not None:
+            running += f" (sesión TWR del check C4 con {second})"
+        self._status_label.setText(running + "...")
         self._report_label.setText("")
 
         worker = ValidationWorker(self._initiator_client, second_client=self._responder_client)

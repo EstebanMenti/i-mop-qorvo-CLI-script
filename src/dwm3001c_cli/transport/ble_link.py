@@ -70,6 +70,12 @@ _BRIDGE_TIMEOUT_MARKER = "Error: sin respuesta del modulo Qorvo"
 _POWER_ON_SETTLE_S = 3.0
 
 
+# Reconexiones transparentes máximas dentro de una sola llamada a
+# read_line(): si la conexión sigue cayendo persistentemente, se propaga
+# el error en vez de extender el timeout indefinidamente.
+_MAX_READ_RECONNECTS = 3
+
+
 class _BleakClientLike(Protocol):
     """Subconjunto de la API de ``BleakClient`` que usa ``BleTransport``.
 
@@ -248,9 +254,21 @@ class BleTransport:
         Sondea en pasos cortos (no un único ``queue.get`` bloqueante) para
         poder detectar una desconexión o un timeout del puente mientras se
         espera, en vez de esperar el ``timeout_s`` completo a ciegas.
+
+        [Bug real, 2026-09-08] El puente puede cerrar la conexión GATT en el
+        medio de un comando (comportamiento normal de este puente, ver
+        ``_ensure_connected``); levantar ``TransportError`` acá mataba la
+        calibración/validación en curso ("conexión BLE perdida esperando
+        respuesta"), cuando lo correcto es reconectar y seguir esperando: el
+        módulo Qorvo sigue encendido y acumulando notificaciones, que llegan
+        apenas vuelve la conexión. El tiempo de reconexión no consume el
+        presupuesto de ``timeout_s`` del que llama. Tras
+        ``_MAX_READ_RECONNECTS`` reconexiones seguidas (conexión
+        persistentemente caída), recién ahí se propaga el error.
         """
         deadline = time.monotonic() + timeout_s
         poll_s = 0.05
+        reconnects_left = _MAX_READ_RECONNECTS
         while True:
             if self._pending_error is not None:
                 error = self._pending_error
@@ -262,7 +280,13 @@ class BleTransport:
             except queue.Empty:
                 pass
             if self._client is not None and not self._connected:
-                raise TransportError(f"{self.name}: conexión BLE perdida esperando respuesta")
+                if reconnects_left <= 0:
+                    raise TransportError(f"{self.name}: conexión BLE perdida esperando respuesta")
+                reconnects_left -= 1
+                reconnect_start = time.monotonic()
+                self._ensure_connected()
+                deadline += time.monotonic() - reconnect_start
+                continue
             if time.monotonic() >= deadline:
                 return None
 
