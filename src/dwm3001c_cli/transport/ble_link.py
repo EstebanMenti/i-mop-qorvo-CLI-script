@@ -75,6 +75,15 @@ _POWER_ON_SETTLE_S = 3.0
 # el error en vez de extender el timeout indefinidamente.
 _MAX_READ_RECONNECTS = 3
 
+# [Bug real, 2026-09-08] Cuando cae la sesión GATT, el objeto WinRT del
+# cliente viejo queda cerrado (RO_E_CLOSED: "[WinError -2147483629] Se cerró
+# el objeto") y, hasta que Windows termina de liberar la sesión, hasta la
+# conexión nueva puede fallar. Respuesta: descartar SIEMPRE el cliente y
+# crear uno nuevo, con reintentos acotados tanto al conectar como al escribir.
+_CONNECT_ATTEMPTS = 3
+_CONNECT_RETRY_DELAY_S = 1.0
+_WRITE_ATTEMPTS = 3
+
 
 class _BleakClientLike(Protocol):
     """Subconjunto de la API de ``BleakClient`` que usa ``BleTransport``.
@@ -217,9 +226,8 @@ class BleTransport:
     # --------------------------------------------------------------- Transport
 
     def write_line(self, line: str) -> None:
-        self._ensure_connected()
         self._reset_pending()
-        self._run_coro(self._send_raw(line), timeout_s=self._write_timeout_s)
+        self._send_with_retry(line)
 
     def _reset_pending(self) -> None:
         """Descarta cualquier fragmento/línea que haya quedado de la respuesta
@@ -301,15 +309,13 @@ class BleTransport:
         real reenviado al Qorvo).
         """
         text = "on" if hold_s is None else f"on -t {hold_s:g}s"
-        self._ensure_connected()
-        self._run_coro(self._send_raw(text), timeout_s=self._write_timeout_s)
+        self._send_with_retry(text)
         self._drain_response()
 
     def power_off(self, hold_s: float | None = None) -> None:
         """``qorvo off``: apaga el módulo Qorvo (ver :meth:`power_on`)."""
         text = "off" if hold_s is None else f"off -t {hold_s:g}s"
-        self._ensure_connected()
-        self._run_coro(self._send_raw(text), timeout_s=self._write_timeout_s)
+        self._send_with_retry(text)
         self._drain_response()
 
     def _drain_response(self, quiet_s: float | None = None) -> None:
@@ -350,7 +356,10 @@ class BleTransport:
             future.result(timeout_s)
         except FutureTimeoutError as exc:
             raise TransportError(f"{self.name}: timeout esperando una operación BLE") from exc
-        except BleakError as exc:
+        except (BleakError, OSError) as exc:
+            # OSError: el backend WinRT de bleak filtra errores crudos del SO
+            # (p. ej. "[WinError -2147483629] Se cerró el objeto", RO_E_CLOSED)
+            # cuando el cliente quedó cerrado por una caída GATT.
             raise TransportError(f"{self.name}: error BLE: {exc}") from exc
 
     def _ensure_connected(self) -> None:
@@ -366,13 +375,52 @@ class BleTransport:
         self._run_coro(self._connect(), timeout_s=self._connect_timeout_s)
 
     async def _connect(self) -> None:
-        client = self._client_factory(self._address, disconnected_callback=self._on_disconnect)
-        await client.connect()
-        await client.start_notify(NUS_TX_CHAR_UUID, self._on_notify)
-        self._client = client
-        self._connected = True
-        self._mtu_size = client.mtu_size
-        logger.debug("%s: conectado, MTU=%s", self.name, self._mtu_size)
+        last_error: Exception | None = None
+        for attempt in range(1, _CONNECT_ATTEMPTS + 1):
+            # Nunca reusar el cliente anterior: tras una caída GATT su objeto
+            # WinRT queda cerrado (RO_E_CLOSED) y hasta que Windows libera la
+            # sesión puede fallar incluso la conexión nueva — por eso se
+            # descarta y se reintenta con clientes nuevos.
+            await self._dispose_client()
+            client = self._client_factory(self._address, disconnected_callback=self._on_disconnect)
+            try:
+                await client.connect()
+                await client.start_notify(NUS_TX_CHAR_UUID, self._on_notify)
+            except (BleakError, OSError) as exc:
+                last_error = exc
+                logger.warning(
+                    "%s: intento %d/%d de conexión falló: %s",
+                    self.name,
+                    attempt,
+                    _CONNECT_ATTEMPTS,
+                    exc,
+                )
+                await self._safe_disconnect(client)
+                if attempt < _CONNECT_ATTEMPTS:
+                    await asyncio.sleep(_CONNECT_RETRY_DELAY_S)
+                continue
+            self._client = client
+            self._connected = True
+            self._mtu_size = client.mtu_size
+            logger.debug("%s: conectado, MTU=%s", self.name, self._mtu_size)
+            return
+        raise TransportError(
+            f"{self.name}: no se pudo conectar tras {_CONNECT_ATTEMPTS} intentos: {last_error}"
+        ) from last_error
+
+    async def _dispose_client(self) -> None:
+        client = self._client
+        self._client = None
+        self._connected = False
+        self._mtu_size = None
+        if client is not None:
+            await self._safe_disconnect(client)
+
+    async def _safe_disconnect(self, client: _BleakClientLike) -> None:
+        try:
+            await client.disconnect()
+        except Exception:
+            logger.debug("%s: fallo al descartar un cliente BLE viejo", self.name, exc_info=True)
 
     async def _disconnect(self) -> None:
         if self._client is None:
@@ -392,6 +440,32 @@ class BleTransport:
         payload = f"qorvo {text}\n".encode("ascii")
         logger.debug("TX %s: %s", self.name, payload)
         await self._client.write_gatt_char(NUS_RX_CHAR_UUID, payload, response=False)
+
+    def _send_with_retry(self, text: str) -> None:
+        """Escribe con reintentos: la escritura puede chocar con una caída
+        GATT que recién se está procesando (el cliente quedó con el objeto
+        WinRT cerrado) — se descarta el cliente, se reconecta con uno nuevo y
+        recién agotados los intentos se propaga el error."""
+        last_error: TransportError | None = None
+        for attempt in range(1, _WRITE_ATTEMPTS + 1):
+            self._ensure_connected()
+            try:
+                self._run_coro(self._send_raw(text), timeout_s=self._write_timeout_s)
+                return
+            except TransportError as exc:
+                last_error = exc
+                logger.warning(
+                    "%s: escritura falló (intento %d/%d): %s",
+                    self.name,
+                    attempt,
+                    _WRITE_ATTEMPTS,
+                    exc,
+                )
+                if self._loop is not None:
+                    self._run_coro(self._dispose_client(), timeout_s=self._connect_timeout_s)
+        raise TransportError(
+            f"{self.name}: escritura falló tras {_WRITE_ATTEMPTS} intentos: {last_error}"
+        ) from last_error
 
     def _on_disconnect(self, _client: object) -> None:
         # Corre en el hilo dedicado de bleak (self._thread), como todo lo que

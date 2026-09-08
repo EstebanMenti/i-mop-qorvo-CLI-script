@@ -8,6 +8,7 @@ from collections.abc import Callable
 import pytest
 
 from dwm3001c_cli.core.errors import TransportError
+from dwm3001c_cli.transport import ble_link as ble_link_module
 from dwm3001c_cli.transport.ble_link import BleTransport
 from fakes import FakeBleakClient
 
@@ -177,9 +178,10 @@ class TestReadLine:
 
         assert line == "ok"
 
-    def test_raises_after_failed_reconnect_attempts(self) -> None:
+    def test_raises_after_failed_reconnect_attempts(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Si la reconexión falla (puente apagado, fuera de alcance...), el
         # error se propaga en vez de colgar.
+        monkeypatch.setattr(ble_link_module, "_CONNECT_RETRY_DELAY_S", 0.0)
         client = FakeBleakClient(ADDRESS)
         calls: list[int] = []
 
@@ -203,7 +205,84 @@ class TestReadLine:
             client.simulate_disconnect()
             with pytest.raises(TransportError):
                 transport.read_line(2.0)
-        assert len(calls) == 2  # open + un intento de reconexión fallido
+        # open + 1 read_line con _CONNECT_ATTEMPTS intentos de reconexión
+        assert len(calls) == 1 + ble_link_module._CONNECT_ATTEMPTS
+
+    def test_connect_retries_with_fresh_client_after_roe_closed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # [Bug real, 2026-09-08] Conectando, el objeto WinRT del cliente puede
+        # estar cerrado todavía (RO_E_CLOSED: "[WinError -2147483629] Se cerró
+        # el objeto"): hay que descartarlo y reintentar con un cliente nuevo.
+        monkeypatch.setattr(ble_link_module, "_CONNECT_RETRY_DELAY_S", 0.0)
+        calls: list[FakeBleakClient] = []
+
+        class ClientClosedOnConnect(FakeBleakClient):
+            async def connect(self) -> None:
+                raise OSError(-2147483629, "Se cerró el objeto")
+
+        def factory(
+            address: str, disconnected_callback: Callable[[object], None] | None = None
+        ) -> FakeBleakClient:
+            client = ClientClosedOnConnect(address) if not calls else FakeBleakClient(address)
+            client._disconnected_callback = disconnected_callback
+            calls.append(client)
+            return client
+
+        transport = BleTransport(
+            ADDRESS,
+            power_on_settle_s=0.0,
+            power_drain_s=0.05,
+            connect_timeout_s=5.0,
+            _client_factory=factory,
+        )
+        with transport:
+            transport.write_line("STAT")
+            assert transport._client is calls[1]
+        assert len(calls) == 2  # el primer cliente falló y se usó uno nuevo
+
+    def test_write_retries_with_fresh_client_after_roe_closed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # [Bug real, 2026-09-08] La escritura puede chocar con una caída GATT
+        # que recién se procesa (RO_E_CLOSED en el write): reintentar con un
+        # cliente nuevo en vez de propagar el WinError crudo.
+        monkeypatch.setattr(ble_link_module, "_CONNECT_RETRY_DELAY_S", 0.0)
+        calls: list[FakeBleakClient] = []
+
+        class ClientDropsOnFirstWrite(FakeBleakClient):
+            async def write_gatt_char(
+                self, char_specifier: str, data: bytes, response: bool | None = None
+            ) -> None:
+                if not self.sent:  # primer write: la sesión acaba de morir
+                    self.simulate_disconnect()
+                    raise OSError(-2147483629, "Se cerró el objeto")
+                await super().write_gatt_char(char_specifier, data, response)
+
+        def factory(
+            address: str, disconnected_callback: Callable[[object], None] | None = None
+        ) -> FakeBleakClient:
+            if calls:
+                client = FakeBleakClient(address, script={"STAT": [b"mode: NONE\r\n", b"ok\r\n"]})
+            else:
+                client = ClientDropsOnFirstWrite(address)
+            client._disconnected_callback = disconnected_callback
+            calls.append(client)
+            return client
+
+        transport = BleTransport(
+            ADDRESS,
+            power_on_settle_s=0.0,
+            power_drain_s=0.05,
+            connect_timeout_s=5.0,
+            _client_factory=factory,
+        )
+        with transport:
+            transport.write_line("STAT")
+            assert transport.read_line(2.0) == "mode: NONE"
+            assert transport._client is calls[1]
+        assert len(calls) == 2  # el primer cliente murió y se usó uno nuevo
+        assert b"qorvo STAT\n" in calls[1].sent
 
 
 class TestPower:
