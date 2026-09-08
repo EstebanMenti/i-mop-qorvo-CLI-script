@@ -83,6 +83,10 @@ _MAX_READ_RECONNECTS = 3
 _CONNECT_ATTEMPTS = 3
 _CONNECT_RETRY_DELAY_S = 1.0
 _WRITE_ATTEMPTS = 3
+# Presupuesto máximo para desconectar un cliente: tras una caída GATT,
+# disconnect() del backend WinRT puede quedar colgado esperando eventos de
+# una sesión ya muerta — sin tope, bloquearía write_line/read_line.
+_DISCONNECT_TIMEOUT_S = 5.0
 
 
 class _BleakClientLike(Protocol):
@@ -191,7 +195,9 @@ class BleTransport:
             target=self._run_loop, name=f"ble-{self._address}", daemon=True
         )
         self._thread.start()
-        self._run_coro(self._connect(), timeout_s=self._connect_timeout_s)
+        # El presupuesto debe cubrir todos los intentos internos de _connect()
+        # (cada connect() de bleak puede tardar hasta ~10 s en Windows).
+        self._run_coro(self._connect(), timeout_s=self._connect_timeout_s * _CONNECT_ATTEMPTS)
         self.power_on()
         time.sleep(self._power_on_settle_s)
 
@@ -355,6 +361,9 @@ class BleTransport:
         try:
             future.result(timeout_s)
         except FutureTimeoutError as exc:
+            # Cancelar la corutina huérfana: si se queda colgada (disconnect()
+            # sobre una sesión muerta, p. ej.), no debe seguir para siempre.
+            future.cancel()
             raise TransportError(f"{self.name}: timeout esperando una operación BLE") from exc
         except (BleakError, OSError) as exc:
             # OSError: el backend WinRT de bleak filtra errores crudos del SO
@@ -372,7 +381,7 @@ class BleTransport:
         # este puente. Reconectar acá (a diferencia de SerialLink, que nunca
         # reconecta solo) es deliberado — ver docs/rama-hardware-ble.md §8.
         logger.warning("%s: reconectando (conexión BLE inactiva o caída)", self.name)
-        self._run_coro(self._connect(), timeout_s=self._connect_timeout_s)
+        self._run_coro(self._connect(), timeout_s=self._connect_timeout_s * _CONNECT_ATTEMPTS)
 
     async def _connect(self) -> None:
         last_error: Exception | None = None
@@ -418,7 +427,10 @@ class BleTransport:
 
     async def _safe_disconnect(self, client: _BleakClientLike) -> None:
         try:
-            await client.disconnect()
+            # [Bug real, 2026-09-08] Tras una caída GATT, disconnect() puede
+            # quedar colgado en el backend WinRT: con tope de tiempo para no
+            # bloquear la reconexión (el cliente se descarta de todos modos).
+            await asyncio.wait_for(client.disconnect(), timeout=_DISCONNECT_TIMEOUT_S)
         except Exception:
             logger.debug("%s: fallo al descartar un cliente BLE viejo", self.name, exc_info=True)
 
@@ -462,7 +474,20 @@ class BleTransport:
                     exc,
                 )
                 if self._loop is not None:
-                    self._run_coro(self._dispose_client(), timeout_s=self._connect_timeout_s)
+                    try:
+                        # Best-effort: el estado (cliente descartado) ya quedó
+                        # actualizado; si el disconnect cuelga, no debe matar
+                        # el reintento.
+                        self._run_coro(
+                            self._dispose_client(),
+                            timeout_s=_DISCONNECT_TIMEOUT_S + 1.0,
+                        )
+                    except TransportError:
+                        logger.debug(
+                            "%s: descarte del cliente vencido; se reintenta igual",
+                            self.name,
+                            exc_info=True,
+                        )
         raise TransportError(
             f"{self.name}: escritura falló tras {_WRITE_ATTEMPTS} intentos: {last_error}"
         ) from last_error

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import threading
 from collections.abc import Callable
 
@@ -282,6 +283,52 @@ class TestReadLine:
             assert transport.read_line(2.0) == "mode: NONE"
             assert transport._client is calls[1]
         assert len(calls) == 2  # el primer cliente murió y se usó uno nuevo
+        assert b"qorvo STAT\n" in calls[1].sent
+
+    def test_write_retry_survives_hanging_disconnect(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # [Bug real, 2026-09-08] Tras una caída GATT, disconnect() del backend
+        # WinRT puede quedar colgado: el descarte del cliente no debe colgar
+        # ni matar el reintento de escritura ("timeout esperando una
+        # operación BLE").
+        monkeypatch.setattr(ble_link_module, "_CONNECT_RETRY_DELAY_S", 0.0)
+        monkeypatch.setattr(ble_link_module, "_DISCONNECT_TIMEOUT_S", 0.05)
+        calls: list[FakeBleakClient] = []
+
+        class ClientHangsOnDisconnect(FakeBleakClient):
+            async def write_gatt_char(
+                self, char_specifier: str, data: bytes, response: bool | None = None
+            ) -> None:
+                if not self.sent:  # primer write: la sesión acaba de morir
+                    self.simulate_disconnect()
+                    raise OSError(-2147483629, "Se cerró el objeto")
+                await super().write_gatt_char(char_specifier, data, response)
+
+            async def disconnect(self) -> None:
+                await asyncio.sleep(3600)  # cuelga como el WinRT real
+
+        def factory(
+            address: str, disconnected_callback: Callable[[object], None] | None = None
+        ) -> FakeBleakClient:
+            if calls:
+                client = FakeBleakClient(address, script={"STAT": [b"mode: NONE\r\n", b"ok\r\n"]})
+            else:
+                client = ClientHangsOnDisconnect(address)
+            client._disconnected_callback = disconnected_callback
+            calls.append(client)
+            return client
+
+        transport = BleTransport(
+            ADDRESS,
+            power_on_settle_s=0.0,
+            power_drain_s=0.05,
+            connect_timeout_s=5.0,
+            _client_factory=factory,
+        )
+        with transport:
+            transport.write_line("STAT")
+            assert transport.read_line(2.0) == "mode: NONE"
+            assert transport._client is calls[1]
+        assert len(calls) == 2  # el primer cliente (colgado) se descartó y se usó uno nuevo
         assert b"qorvo STAT\n" in calls[1].sent
 
 
