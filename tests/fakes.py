@@ -114,6 +114,10 @@ class FakeBleakClient:
             dedicado, ver :meth:`simulate_stream_data`.
         mtu_size: valor fijo a reportar en ``mtu_size``.
         fail_connect: si es ``True``, ``connect()`` lanza ``BleakError``.
+        gatt_char_values: mapa característica → valor fijo para
+            ``read_gatt_char`` (p. ej. batería/versión de firmware del
+            puente); una característica no listada lanza ``BleakError``,
+            igual que un dispositivo real sin ese servicio.
     """
 
     def __init__(
@@ -126,6 +130,7 @@ class FakeBleakClient:
         script: dict[str, list[bytes]] | None = None,
         mtu_size: int = 247,
         fail_connect: bool = False,
+        gatt_char_values: dict[str, bytes] | None = None,
     ) -> None:
         self.address = address
         self._disconnected_callback = disconnected_callback
@@ -135,6 +140,7 @@ class FakeBleakClient:
         self.mtu_size = mtu_size
         self.fail_connect = fail_connect
         self.sent: list[bytes] = []
+        self.gatt_char_values = dict(gatt_char_values or {})
         # Para que los tests puedan verificar con qué opciones se construyó
         # este cliente (p. ej. si BleTransport pidió el caché de servicios).
         self.requested_services = list(services) if services is not None else None
@@ -183,6 +189,14 @@ class FakeBleakClient:
         if chunks and callback is not None:
             for chunk in chunks:
                 callback(None, bytearray(chunk))
+
+    async def read_gatt_char(self, char_specifier: str) -> bytearray:
+        from bleak.exc import BleakError
+
+        value = self.gatt_char_values.get(char_specifier)
+        if value is None:
+            raise BleakError(f"fake: caracteristica desconocida {char_specifier}")
+        return bytearray(value)
 
     def simulate_stream_data(self, chunk: bytes) -> None:
         """Simula datos entrantes por la característica dedicada de streaming

@@ -39,7 +39,7 @@ import time
 from collections.abc import Callable, Coroutine
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from types import TracebackType
-from typing import Any, Protocol, Self, cast
+from typing import Any, Protocol, Self, TypeVar, cast
 
 from bleak import BleakClient
 from bleak.exc import BleakError
@@ -48,6 +48,8 @@ from dwm3001c_cli.core.errors import TransportError
 from dwm3001c_cli.transport.serial_link import LineAssembler
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
 
 NUS_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
 NUS_RX_CHAR_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"  # PC -> nRF (write)
@@ -70,6 +72,17 @@ NUS_TX_CHAR_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"  # nRF -> PC (notify)
 # reservado ``qorvo stream on``, igual mecanismo que ``power_on()``).
 STREAM_SERVICE_UUID = "019dad38-2b03-4df9-ac87-70ce530540fb"
 STREAM_DATA_CHAR_UUID = "36a9a2d9-a035-440f-8e59-ff0a72b2ba51"  # nRF -> PC (notify)
+
+# Servicios estándar de Bluetooth SIG que expone el puente (ver
+# I-mop-nrf52840-fw/doc/00_BLE_Protocol_Specification.md §5.1/§5.2) — nada
+# propietario, UUIDs de 16 bits sobre la base estándar de Bluetooth. Battery
+# Level es el nivel de batería del puente (0-100%); Firmware Revision es la
+# versión del firmware del puente nRF52840 (no la del Qorvo — para eso ver
+# DwmCliClient.stat(), campo "Version"/"Build").
+BATTERY_SERVICE_UUID = "0000180f-0000-1000-8000-00805f9b34fb"
+BATTERY_LEVEL_CHAR_UUID = "00002a19-0000-1000-8000-00805f9b34fb"
+DEVICE_INFO_SERVICE_UUID = "0000180a-0000-1000-8000-00805f9b34fb"
+FIRMWARE_REV_CHAR_UUID = "00002a26-0000-1000-8000-00805f9b34fb"
 
 # Prompt del shell de Zephyr tras cada respuesta (ej. "bt_nus:~$ "); no es
 # contenido del Qorvo, hay que descartarlo antes de que lo vea DwmCliClient.
@@ -131,6 +144,8 @@ class _BleakClientLike(Protocol):
     async def write_gatt_char(
         self, char_specifier: str, data: bytes, response: bool | None = None
     ) -> None: ...
+
+    async def read_gatt_char(self, char_specifier: str) -> bytearray: ...
 
 
 class BleTransport:
@@ -203,6 +218,10 @@ class BleTransport:
         # de Python — confirmado aislando el problema contra hardware real.
         self._connected = False
         self._mtu_size: int | None = None
+        # Último valor leído por read_battery_level()/read_bridge_firmware_version()
+        # (ver esos métodos) — None hasta la primera lectura exitosa.
+        self.battery_pct: int | None = None
+        self.bridge_firmware_version: str | None = None
 
     @property
     def name(self) -> str:
@@ -395,6 +414,53 @@ class BleTransport:
         self._send_with_retry("stream off")
         self._drain_response()
 
+    def read_battery_level(self) -> int | None:
+        """Nivel de batería del puente (0-100%), vía el Battery Service
+        estándar (:data:`BATTERY_LEVEL_CHAR_UUID`) — no requiere el comando
+        ``qorvo``, es una lectura GATT directa fuera del canal de comandos.
+
+        Best-effort: es información complementaria, no crítica para el
+        funcionamiento del transporte. Si el puente no expone el servicio o
+        la lectura falla, se loguea y devuelve ``None`` en vez de propagar
+        el error. Actualiza :attr:`battery_pct` con el mismo valor.
+        """
+        try:
+            self._ensure_connected()
+            data = self._run_coro(
+                self._read_gatt_char(BATTERY_LEVEL_CHAR_UUID), timeout_s=self._write_timeout_s
+            )
+        except TransportError:
+            logger.debug("%s: no se pudo leer el nivel de batería", self.name, exc_info=True)
+            return None
+        self.battery_pct = data[0] if data else None
+        return self.battery_pct
+
+    def read_bridge_firmware_version(self) -> str | None:
+        """Versión de firmware del puente nRF52840 (no la del Qorvo — para
+        esa ver ``DwmCliClient.stat()``), vía Device Information Service
+        estándar (:data:`FIRMWARE_REV_CHAR_UUID`).
+
+        Best-effort, mismo criterio que :meth:`read_battery_level`. Actualiza
+        :attr:`bridge_firmware_version` con el mismo valor.
+        """
+        try:
+            self._ensure_connected()
+            data = self._run_coro(
+                self._read_gatt_char(FIRMWARE_REV_CHAR_UUID), timeout_s=self._write_timeout_s
+            )
+        except TransportError:
+            logger.debug(
+                "%s: no se pudo leer la versión de firmware del puente", self.name, exc_info=True
+            )
+            return None
+        self.bridge_firmware_version = data.decode("utf-8", errors="replace").strip() or None
+        return self.bridge_firmware_version
+
+    async def _read_gatt_char(self, char_uuid: str) -> bytes:
+        if self._client is None:
+            raise TransportError(f"{self.name}: no conectado")
+        return bytes(await self._client.read_gatt_char(char_uuid))
+
     def _drain_response(self, quiet_s: float | None = None) -> None:
         """Lee y descarta hasta que no llegue nada nuevo por ``quiet_s``.
 
@@ -425,12 +491,12 @@ class BleTransport:
         asyncio.set_event_loop(self._loop)
         self._loop.run_forever()
 
-    def _run_coro(self, coro: Coroutine[Any, Any, None], *, timeout_s: float) -> None:
+    def _run_coro(self, coro: Coroutine[Any, Any, _T], *, timeout_s: float) -> _T:
         if self._loop is None:
             raise TransportError(f"{self.name}: transporte no abierto (llamar open() primero)")
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
         try:
-            future.result(timeout_s)
+            return future.result(timeout_s)
         except FutureTimeoutError as exc:
             # Cancelar la corutina huérfana: si se queda colgada (disconnect()
             # sobre una sesión muerta, p. ej.), no debe seguir para siempre.
@@ -513,7 +579,12 @@ class BleTransport:
             client = self._client_factory(
                 self._address,
                 disconnected_callback=self._on_disconnect,
-                services=[NUS_SERVICE_UUID, STREAM_SERVICE_UUID],
+                services=[
+                    NUS_SERVICE_UUID,
+                    STREAM_SERVICE_UUID,
+                    BATTERY_SERVICE_UUID,
+                    DEVICE_INFO_SERVICE_UUID,
+                ],
                 winrt={"use_cached_services": use_cached_services},
             )
             try:
@@ -629,20 +700,41 @@ class BleTransport:
         # Corre en el hilo dedicado de bleak (self._thread), como todo lo que
         # toca self._client — seguro escribir acá el mismo atributo plano que
         # lee read_line() desde cualquier otro hilo.
-        self._connected = False
-        logger.warning("%s: conexión BLE cerrada", self.name)
+        #
+        # [Investigación 2026-09-09, hardware real] Este callback (y
+        # _on_notify/_on_stream_notify de abajo) lo invoca DIRECTAMENTE la
+        # capa nativa WinRT de bleak (pywinrt), no una señal Qt — a
+        # diferencia de un slot Qt (que sí sobrevive una excepción sin
+        # atrapar, confirmado con un test aislado), dejar escapar una
+        # excepción de Python a través del límite C++/WinRT del callback no
+        # tiene la misma garantía de seguridad y es una causa plausible de
+        # un cierre nativo sin traza (investigado tras un cierre reportado
+        # tres veces al conectar dos nodos por BLE, sin confirmación
+        # definitiva de la causa raíz — ver docs/rama-hardware-ble.md §8).
+        # Nunca dejar que una excepción cruce ese límite, la haya causado o
+        # no en este caso puntual.
+        try:
+            self._connected = False
+            logger.warning("%s: conexión BLE cerrada", self.name)
+        except Exception:
+            logger.critical("%s: excepción en _on_disconnect", self.name, exc_info=True)
 
     def _on_notify(self, _sender: object, data: bytearray) -> None:
-        for line in self._assembler.feed(bytes(data)):
-            if _PROMPT_RE.match(line):
-                logger.debug("%s: prompt de shell descartado: %r", self.name, line)
-                continue
-            if line.startswith(_BRIDGE_TIMEOUT_MARKER):
-                logger.warning("%s: el puente reportó timeout hacia el Qorvo: %s", self.name, line)
-                self._pending_error = line
-                continue
-            logger.debug("RX %s: %s", self.name, line)
-            self._rx_queue.put(line)
+        try:
+            for line in self._assembler.feed(bytes(data)):
+                if _PROMPT_RE.match(line):
+                    logger.debug("%s: prompt de shell descartado: %r", self.name, line)
+                    continue
+                if line.startswith(_BRIDGE_TIMEOUT_MARKER):
+                    logger.warning(
+                        "%s: el puente reportó timeout hacia el Qorvo: %s", self.name, line
+                    )
+                    self._pending_error = line
+                    continue
+                logger.debug("RX %s: %s", self.name, line)
+                self._rx_queue.put(line)
+        except Exception:  # ver nota de _on_disconnect: nunca escapar al callback nativo
+            logger.critical("%s: excepción en _on_notify", self.name, exc_info=True)
 
     def _on_stream_notify(self, _sender: object, data: bytearray) -> None:
         """Callback de la característica dedicada de streaming (ver
@@ -651,6 +743,9 @@ class BleTransport:
         este canal es un passthrough del UART del Qorvo, no pasa por el shell
         de comandos (ver comentario junto a ``STREAM_SERVICE_UUID``).
         """
-        for line in self._stream_assembler.feed(bytes(data)):
-            logger.debug("STREAM %s: %s", self.name, line)
-            self._stream_queue.put(line)
+        try:
+            for line in self._stream_assembler.feed(bytes(data)):
+                logger.debug("STREAM %s: %s", self.name, line)
+                self._stream_queue.put(line)
+        except Exception:  # ver nota de _on_disconnect: nunca escapar al callback nativo
+            logger.critical("%s: excepción en _on_stream_notify", self.name, exc_info=True)

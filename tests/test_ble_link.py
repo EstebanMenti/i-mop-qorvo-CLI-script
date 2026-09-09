@@ -68,14 +68,17 @@ class TestLifecycle:
 
     def test_first_connect_requests_scoped_service_and_cache(self) -> None:
         # [Mitigación 2026-09-09] Reduce el tiempo muerto de una reconexión:
-        # limitar el descubrimiento a los servicios usados (NUS + streaming)
-        # y pedirle a Windows que reuse su caché de servicios ya conocido.
+        # limitar el descubrimiento a los servicios usados (NUS, streaming,
+        # batería, info del dispositivo) y pedirle a Windows que reuse su
+        # caché de servicios ya conocido.
         transport, client = make_transport()
 
         with transport:
             assert client.requested_services == [
                 ble_link_module.NUS_SERVICE_UUID,
                 ble_link_module.STREAM_SERVICE_UUID,
+                ble_link_module.BATTERY_SERVICE_UUID,
+                ble_link_module.DEVICE_INFO_SERVICE_UUID,
             ]
             assert client.winrt_args == {"use_cached_services": True}
 
@@ -420,6 +423,49 @@ class TestPower:
             transport.power_off()
 
         assert b"qorvo off\n" in client.sent
+
+
+class TestDeviceStatus:
+    """Batería y versión de firmware del puente — servicios GATT estándar
+    (Battery Service / Device Information Service), sin pasar por el canal
+    de comandos ``qorvo <cmd>``."""
+
+    def test_read_battery_level(self) -> None:
+        fake = FakeBleakClient(
+            ADDRESS, gatt_char_values={ble_link_module.BATTERY_LEVEL_CHAR_UUID: bytes([78])}
+        )
+        transport, _ = make_transport(fake)
+
+        with transport:
+            assert transport.read_battery_level() == 78
+            assert transport.battery_pct == 78
+
+    def test_read_bridge_firmware_version(self) -> None:
+        fake = FakeBleakClient(
+            ADDRESS,
+            gatt_char_values={ble_link_module.FIRMWARE_REV_CHAR_UUID: b"1.4.2"},
+        )
+        transport, _ = make_transport(fake)
+
+        with transport:
+            assert transport.read_bridge_firmware_version() == "1.4.2"
+            assert transport.bridge_firmware_version == "1.4.2"
+
+    def test_battery_level_best_effort_when_unavailable(self) -> None:
+        # Puente sin el servicio (o falla la lectura): no debe propagar el
+        # error, es informacion complementaria, no critica.
+        transport, _ = make_transport()
+
+        with transport:
+            assert transport.read_battery_level() is None
+            assert transport.battery_pct is None
+
+    def test_firmware_version_best_effort_when_unavailable(self) -> None:
+        transport, _ = make_transport()
+
+        with transport:
+            assert transport.read_bridge_firmware_version() is None
+            assert transport.bridge_firmware_version is None
 
 
 class TestStreaming:
