@@ -55,3 +55,30 @@ def find_ble_boards(
 ) -> list[BleBoardInfo]:
     """Envoltorio síncrono de :func:`scan_ble_boards` para la capa ``app``."""
     return asyncio.run(scan_ble_boards(timeout_s=timeout_s, name_filter=name_filter))
+
+
+async def scan_ble_devices(timeout_s: float = 6.0) -> list[BleBoardInfo]:
+    """Escanea ``timeout_s`` segundos y devuelve **todos** los dispositivos BLE vistos.
+
+    Sin ningún filtro (ni por nombre ni por servicio NUS): la GUI de calibración
+    con ambos nodos por Bluetooth lista todo lo que hay en el aire y deja que el
+    usuario filtre y elija, en vez de presuponer que los puentes se llaman
+    "UWB Node". Los dispositivos sin nombre se reportan con el rótulo
+    "(sin nombre)" — igual entran a la lista, porque el nombre del advertising
+    del puente es configurable y puede llegar vacío.
+    """
+    found = await BleakScanner.discover(timeout=timeout_s, return_adv=True)
+    devices = [
+        BleBoardInfo(
+            address=device.address,
+            name=device.name or adv.local_name or "(sin nombre)",
+            rssi=adv.rssi,
+        )
+        for device, adv in found.values()
+    ]
+    return sorted(devices, key=lambda board: (board.name, board.address))
+
+
+def find_ble_devices(timeout_s: float = 6.0) -> list[BleBoardInfo]:
+    """Envoltorio síncrono de :func:`scan_ble_devices` para la capa ``app``/GUI."""
+    return asyncio.run(scan_ble_devices(timeout_s=timeout_s))

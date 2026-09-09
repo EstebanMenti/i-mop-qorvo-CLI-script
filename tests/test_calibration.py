@@ -179,6 +179,22 @@ class TestCollectSamples:
 
         assert not any(cmd.startswith("CALKEY") for cmd in responder_t.sent)
 
+    def test_does_not_ping_responder_during_wait(self) -> None:
+        # [Descartado 2026-09-09, hardware real] collect_samples() tuvo un
+        # keepalive STAT periódico al responder (portado de
+        # i-mop-tools-measure), retirado tras confirmar contra hardware real
+        # que con el streaming BLE dedicado ya no hace falta y además es
+        # contraproducente (ver docstring de collect_samples).
+        world = TwrWorld(real_cm=200.0, delay=16439, ideal_delay=16439)
+        initiator, responder, _, responder_t = make_pair(world)
+
+        collect_samples(initiator, responder, n_samples=5)
+
+        stat_count = sum(1 for cmd in responder_t.sent if cmd == "STAT")
+        # Los 2 STAT de ensure_mode_none() (arranque + limpieza final), sin
+        # ningún STAT de más en el medio.
+        assert stat_count == 2
+
 
 class TestAutocalibrate:
     def test_converges_from_30cm_error(self, tmp_path: Path) -> None:

@@ -89,7 +89,17 @@ dwm-gui
 
 Si ya tenés el entorno virtual creado y activado (por ejemplo porque ya instalaste el paquete para usar la CLI `dwm`, sección 3), alcanza con repetir el paso 4 para sumar las dependencias de la GUI y correr el paso 5 — no hace falta un entorno nuevo ni volver a clonar nada.
 
-La ventana abre igual sin placas conectadas: podés navegar las cuatro pestañas, y "Escanear placas (USB + BLE)" va a listar lo que detecte en tu PC (vacío si no tenés nada conectado). "Conectar", Terminal, Validar y Calibrar necesitan una placa real para hacer algo.
+La ventana abre igual sin placas conectadas: podés navegar las cinco pestañas, y "Escanear placas (USB + BLE)" va a listar lo que detecte en tu PC (vacío si no tenés nada conectado). "Conectar", Terminal, Validar y Calibrar necesitan una placa real para hacer algo.
+
+### Pestaña "Calibración BLE" — calibración con ambos nodos por Bluetooth
+
+Además del flujo USB-USB, la pestaña **"Calibración BLE"** permite calibrar el
+antenna delay con **las dos placas conectadas por Bluetooth** (cada una vía su
+puente nRF52840): escanea todos los dispositivos BLE al alcance, los filtra por
+texto, seleccionás los dos nodos (siempre queda a la vista cuál es el que **se
+calibra**), ingresás la distancia real y seguís el proceso con estado en vivo y
+la **distancia medida** actualizada con cada medición. Guía completa:
+[docs/gui-calibracion-ble.md](docs/gui-calibracion-ble.md).
 
 ## 6. Documentación
 

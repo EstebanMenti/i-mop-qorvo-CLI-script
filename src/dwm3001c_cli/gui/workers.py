@@ -6,6 +6,7 @@ de progreso continuas. Ninguno importa Qt widgets — solo ``QtCore``.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Protocol
 
@@ -17,11 +18,14 @@ from dwm3001c_cli.calibration.autocal import (
     CalibrationReport,
     autocalibrate,
 )
+from dwm3001c_cli.calibration.sampler import SessionParams, collect_samples
 from dwm3001c_cli.core.client import DwmCliClient
-from dwm3001c_cli.core.models import ValidationResult
+from dwm3001c_cli.core.models import Measurement, RangingStats, ValidationResult
 from dwm3001c_cli.transport.discovery import BoardPort, find_boards
 from dwm3001c_cli.transport.serial_link import Transport
 from dwm3001c_cli.validation.runner import run_validation
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     # Importado en forma diferida en tiempo de ejecución (ver ScanWorker.run):
@@ -168,6 +172,171 @@ class ValidationWorker(QObject):
         self.finished.emit(results, device)
 
 
+class BleScanWorker(QObject):
+    """Escanea TODOS los dispositivos BLE al alcance (sin filtro de nombre).
+
+    A diferencia de :class:`ScanWorker`, no presupone que los puentes se llaman
+    "UWB Node": devuelve la lista completa para que la vista la muestre y el
+    usuario filtre con el campo de texto.
+    """
+
+    finished = Signal(list)  # list[BleBoardInfo]
+    failed = Signal(str)
+
+    def __init__(self, timeout_s: float = 6.0) -> None:
+        super().__init__()
+        self._timeout_s = timeout_s
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            from dwm3001c_cli.transport.ble_discovery import find_ble_devices
+
+            devices = find_ble_devices(self._timeout_s)
+        except Exception as exc:  # sin adaptador BLE, adaptador ocupado, etc.
+            self.failed.emit(str(exc))
+            return
+        self.finished.emit(devices)
+
+
+def _ble_sampler(
+    initiator: DwmCliClient,
+    responder: DwmCliClient,
+    *,
+    n_samples: int,
+    session_params: SessionParams,
+    on_measurement: Callable[[Measurement], None] | None = None,
+) -> RangingStats:
+    """Sampler para **ambas placas por Bluetooth**: ``collect_samples`` (lectura
+    pasiva, la misma función que USB-USB) con presupuesto de tiempo más
+    holgado y un piso de muestras más bajo.
+
+    [Verificado 2026-09-09, hardware real, UWB-Node-6/-8, firmware del
+    puente con streaming BLE dedicado — ver ``STREAM_SERVICE_UUID`` en
+    ``transport/ble_link.py``] 100/100 SUCCESS en flujo continuo (~200ms
+    entre muestras, sin ráfagas ni huecos) en una sola sesión de 100
+    muestras. Antes del streaming, el canal de comandos (NUS TX) tenía una
+    ventana acotada a 8s (bug del firmware puente, ya corregido) que
+    limitaba cada sesión a ~40 muestras en una única ráfaga inicial y
+    silencio después — de ahí venían el piso de muestras reducido
+    (``_BLE_MIN_SAMPLES``) y el multiplicador de timeout más generoso
+    (``_BLE_TIMEOUT_MULTIPLIER``) de acá abajo: ya no son estrictamente
+    necesarios, pero se mantienen como margen de seguridad razonable (un
+    enlace BLE puede seguir teniendo hipos puntuales) en vez de ajustarlos
+    al límite sin más evidencia de campo.
+    """
+    block_ms = session_params.block_ms if session_params is not None else SessionParams().block_ms
+    return collect_samples(
+        initiator,
+        responder,
+        n_samples=n_samples,
+        session_params=session_params,
+        timeout_s=n_samples * block_ms * _BLE_TIMEOUT_MULTIPLIER / 1000,
+        min_samples=min(_BLE_MIN_SAMPLES, n_samples),
+        on_measurement=on_measurement,
+    )
+
+
+# Piso de muestras SUCCESS y multiplicador de timeout para el sampler BLE
+# (ver docstring de _ble_sampler): margen de seguridad para hipos puntuales
+# del enlace BLE, no un requisito estricto con el streaming dedicado activo.
+_BLE_MIN_SAMPLES = 30
+_BLE_TIMEOUT_MULTIPLIER = 5
+
+
+class BlePairCalibrationWorker(QObject):
+    """Calibración con **ambas placas por Bluetooth** (puentes nRF52840).
+
+    Abre los dos ``BleTransport``, corre ``autocalibrate`` con
+    :func:`_ble_sampler` y cierra ambos transportes siempre, incluso ante
+    error. Emite por señal cada medición recibida (para mostrar la distancia
+    en vivo) y cada iteración completada.
+    """
+
+    stage = Signal(str)  # texto de etapa para el banner de estado
+    measurement_received = Signal(object)  # Measurement
+    iteration_completed = Signal(object)  # CalibrationIteration
+    finished = Signal(object)  # CalibrationReport
+    failed = Signal(str)
+
+    # [Verificado 2026-08-13, hardware real] Por BLE los gaps entre fragmentos
+    # llegan a ~590 ms: la capa app debe usar quiet_period_s ~1.5 y un timeout
+    # de comando holgado (ver docstring de DwmCliClient).
+    _QUIET_PERIOD_S = 1.5
+    _COMMAND_TIMEOUT_S = 10.0
+
+    def __init__(
+        self,
+        initiator_info: BleBoardInfo,
+        dut_info: BleBoardInfo,
+        *,
+        real_distance_m: float,
+        config: AutocalConfig,
+    ) -> None:
+        super().__init__()
+        self._initiator_info = initiator_info
+        self._dut_info = dut_info
+        self._real_distance_m = real_distance_m
+        self._config = config
+
+    @Slot()
+    def run(self) -> None:
+        from dwm3001c_cli.transport.ble_link import BleTransport
+
+        initiator_transport: BleTransport | None = None
+        dut_transport: BleTransport | None = None
+        report: CalibrationReport | None = None
+        error: Exception | None = None
+        try:
+            self.stage.emit(
+                f"Conectando a {self._initiator_info.name} "
+                f"({self._initiator_info.address}) — rol INITIATOR, referencia…"
+            )
+            initiator_transport = BleTransport(self._initiator_info.address)
+            initiator_transport.open()
+            initiator = DwmCliClient(
+                initiator_transport,
+                quiet_period_s=self._QUIET_PERIOD_S,
+                command_timeout_s=self._COMMAND_TIMEOUT_S,
+            )
+            self.stage.emit(
+                f"Conectando a {self._dut_info.name} ({self._dut_info.address}) "
+                "— rol RESPONDER, a calibrar…"
+            )
+            dut_transport = BleTransport(self._dut_info.address)
+            dut_transport.open()
+            dut = DwmCliClient(
+                dut_transport,
+                quiet_period_s=self._QUIET_PERIOD_S,
+                command_timeout_s=self._COMMAND_TIMEOUT_S,
+            )
+            self.stage.emit(f"Calibrando {self._dut_info.name} contra {self._initiator_info.name}…")
+            report = autocalibrate(
+                dut,
+                initiator,
+                real_distance_m=self._real_distance_m,
+                config=self._config,
+                sampler=_ble_sampler,
+                on_iteration=self.iteration_completed.emit,
+                on_measurement=self.measurement_received.emit,
+            )
+        except Exception as exc:  # nunca dejar escapar una excepción del worker
+            error = exc
+        finally:
+            for transport in (dut_transport, initiator_transport):
+                if transport is None:
+                    continue
+                try:
+                    transport.close()
+                except Exception:
+                    logger.warning("Error cerrando un transporte BLE al terminar", exc_info=True)
+        if error is not None:
+            self.failed.emit(str(error))
+            return
+        assert report is not None
+        self.finished.emit(report)
+
+
 class CalibrationWorker(QObject):
     """Corre ``autocalibrate`` con progreso en vivo por iteración."""
 
@@ -231,6 +400,8 @@ def start_worker(worker: _RunnableWorker) -> QThread:
 
 
 __all__ = [
+    "BlePairCalibrationWorker",
+    "BleScanWorker",
     "BoardPort",
     "CalibrationIteration",
     "CalibrationWorker",

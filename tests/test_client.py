@@ -94,10 +94,72 @@ class TestSendCommand:
 
         assert lines[0] == "DIAG: 0"
 
-    def test_quiet_period_ends_collection_without_ok(self) -> None:
-        client, _ = make_client({"THREAD": ["linea 1", "linea 2"]})
+    def test_quiet_period_ends_collection_when_ok_is_dropped_but_echo_seen(self) -> None:
+        # El "ok" final se pierde (notificación BLE sin ACK), pero el eco
+        # propio sí llegó: el período de silencio es un respaldo válido.
+        client, _ = make_client({"THREAD": ["THREAD", "linea 1", "linea 2"]})
 
         assert client.send_command("THREAD") == ["linea 1", "linea 2"]
+
+    def test_quiet_period_without_own_echo_raises_timeout(self) -> None:
+        # Real (2026-09-08, hardware real, dos placas por Bluetooth — pestaña
+        # "Calibración BLE" de la GUI): send_command("STAT") devolvió ~40
+        # notificaciones SESSION_INFO_NTF acumuladas, cortadas por silencio,
+        # sin haber visto nunca el eco de STAT — el "ok" real se perdió (las
+        # notificaciones BLE no tienen ACK). Antes ese backlog se aceptaba
+        # como si fuera la respuesta y parse_stat fallaba con "sin bloque
+        # JSxxxx"; ahora, silencio con contenido pero sin eco propio no se
+        # acepta como respuesta: debe vencer por timeout.
+        client, _ = make_client({"STAT": ["SESSION_INFO_NTF: {...}", "SESSION_INFO_NTF: {...}"]})
+
+        with pytest.raises(CommandTimeoutError):
+            client.send_command("STAT")
+
+    def test_discards_stale_backlog_of_another_command_ble_bridge(self) -> None:
+        # Real (2026-09-08, puente BLE): el sampler por polling
+        # (calibration/poll_sampler.py) reenvía THREAD; su respuesta llegó
+        # rezagada y quedó en la cola justo cuando se pidió STAT — send_command
+        # devolvía el bloque completo de THREAD (con su propio "ok") como si
+        # fuera la respuesta de STAT, y parse_stat fallaba con "sin bloque
+        # JSxxxx". El bloque ajeno debe descartarse y la lectura debe seguir
+        # hasta la respuesta real.
+        client, transport = make_client({"STAT": STAT_REAL})
+        transport.push_lines(
+            [
+                "THREAD",
+                "THREAD NAME     \tStack usage",
+                "Control         \t1352/2048",
+                "ok",
+            ]
+        )
+
+        lines = client.send_command("STAT")
+
+        assert lines[0].startswith("JS0109")
+        assert lines[-1] == "ok"
+        assert not any(line.startswith("THREAD") for line in lines)
+
+    def test_discards_ntf_backlog_ending_in_foreign_echo_ble_bridge(self) -> None:
+        # Real (2026-09-08, hardware real, dos placas por Bluetooth a 2 m
+        # — UWB-Node-6/UWB-Node-8): en ensure_mode_none(), stop() venció por
+        # timeout antes de ver su propio eco+ok (llegaron rezagados). Para
+        # cuando se pidió el STAT siguiente, la cola tenía ~40 notificaciones
+        # SESSION_INFO_NTF acumuladas (la sesión seguía activa) seguidas del
+        # eco+"ok" rezagado de ese STOP — el eco ajeno no estaba en la
+        # primera línea sino al final de un backlog largo. send_command
+        # devolvía ese bloque completo como si fuera la respuesta de STAT.
+        client, transport = make_client({"STAT": STAT_REAL})
+        ntf = (
+            "SESSION_INFO_NTF: {session_handle=1, sequence_number=1, block_index=1,"
+            ' n_measurements=1 [mac_address=0x0001, status="SUCCESS", distance[cm]=250]}'
+        )
+        transport.push_lines([ntf] * 40 + ["STOP", "ok"])
+
+        lines = client.send_command("STAT")
+
+        assert lines[0].startswith("JS0109")
+        assert lines[-1] == "ok"
+        assert not any(line.startswith("SESSION_INFO_NTF") or line == "STOP" for line in lines)
 
 
 class TestStatAndMode:

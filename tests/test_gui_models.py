@@ -21,7 +21,7 @@ def test_starts_empty() -> None:
     model = ValidationResultsModel()
 
     assert model.rowCount() == 0
-    assert model.columnCount() == 4
+    assert model.columnCount() == 5
 
 
 def test_add_result_grows_row_count() -> None:
@@ -32,27 +32,45 @@ def test_add_result_grows_row_count() -> None:
     assert model.rowCount() == 1
 
 
+def test_device_column_defaults_to_primary() -> None:
+    model = ValidationResultsModel()
+    model.start_run("COM7")
+    model.add_result(_result(command="A1 HELP", passed=True))
+
+    assert model.data(model.index(0, 1)) == "COM7"
+
+
+def test_device_column_shows_both_for_c4() -> None:
+    model = ValidationResultsModel()
+    model.start_run("COM7", "BLE-CCEBFE5BC5E9")
+    model.add_result(_result(command="A1 HELP", passed=True))
+    model.add_result(_result(command="C4 Sesión TWR (2 placas)", passed=True))
+
+    assert model.data(model.index(0, 1)) == "COM7"
+    assert model.data(model.index(1, 1)) == "COM7 + BLE-CCEBFE5BC5E9"
+
+
 def test_data_reports_status_and_detail() -> None:
     model = ValidationResultsModel()
     model.add_result(_result(command="A1 HELP", passed=True, detail="lista de comandos"))
 
     assert model.data(model.index(0, 0)) == "A1 HELP"
-    assert model.data(model.index(0, 1)) == "PASS"
-    assert model.data(model.index(0, 3)) == "lista de comandos"
+    assert model.data(model.index(0, 2)) == "PASS"
+    assert model.data(model.index(0, 4)) == "lista de comandos"
 
 
 def test_data_reports_fail_status() -> None:
     model = ValidationResultsModel()
     model.add_result(_result(passed=False, detail="mal"))
 
-    assert model.data(model.index(0, 1)) == "FAIL"
+    assert model.data(model.index(0, 2)) == "FAIL"
 
 
 def test_data_reports_skip_status() -> None:
     model = ValidationResultsModel()
     model.add_result(_result(detail="SKIP: requiere una segunda placa conectada"))
 
-    assert model.data(model.index(0, 1)) == "SKIP"
+    assert model.data(model.index(0, 2)) == "SKIP"
 
 
 def test_clear_resets_rows() -> None:
@@ -70,4 +88,6 @@ def test_header_data() -> None:
     model = ValidationResultsModel()
 
     assert model.headerData(0, Qt.Orientation.Horizontal) == "Check"
-    assert model.headerData(1, Qt.Orientation.Horizontal) == "Estado"
+    assert model.headerData(1, Qt.Orientation.Horizontal) == "Dispositivo"
+    assert model.headerData(2, Qt.Orientation.Horizontal) == "Estado"
+    assert model.headerData(4, Qt.Orientation.Horizontal) == "Detalle"

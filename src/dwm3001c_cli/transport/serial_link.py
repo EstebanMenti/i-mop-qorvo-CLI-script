@@ -44,6 +44,16 @@ class Transport(Protocol):
         """Devuelve la próxima línea recibida, o ``None`` si venció el timeout."""
         ...
 
+    def read_notification_line(self, timeout_s: float) -> str | None:
+        """Línea del canal de notificaciones de ranging (``SESSION_INFO_NTF``).
+
+        Para transportes de un solo canal (USB) es el mismo flujo que
+        ``read_line``. ``BleTransport`` lo redefine para leer de la
+        característica GATT dedicada de streaming (separada de las
+        respuestas de comando) — ver su docstring.
+        """
+        ...
+
     @property
     def name(self) -> str:
         """Identificador del transporte, p. ej. ``"COM7"``."""
@@ -157,6 +167,10 @@ class SerialLink:
                 ) from exc
             if chunk:
                 self._pending.extend(self._assembler.feed(chunk))
+
+    def read_notification_line(self, timeout_s: float) -> str | None:
+        """Ver ``Transport.read_notification_line``: mismo canal que ``read_line``."""
+        return self.read_line(timeout_s)
 
     def __enter__(self) -> Self:
         self.open()

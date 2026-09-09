@@ -1,7 +1,8 @@
-"""Vista de conexión: INITIATOR siempre por USB; RESPONDER por USB o BLE.
+"""Vista de conexión: INITIATOR y RESPONDER, cada uno por USB o por BLE.
 
-El rol BLE es siempre RESPONDER (rama ``hardware/ble-bridge-nrf52840``) — no
-se ofrece la opción de conectar el INITIATOR por Bluetooth.
+Cada rol se conecta por puerto serie USB (placa directa) o por Bluetooth
+(puente nRF52840, rama ``hardware/ble-bridge-nrf52840``), de forma
+independiente — por ejemplo, ambos por BLE para la calibración remota.
 """
 
 from __future__ import annotations
@@ -75,17 +76,38 @@ class ConnectionView(QWidget):
         layout.addStretch(1)
 
     def _build_initiator_box(self) -> QGroupBox:
-        box = QGroupBox("INITIATOR (USB)")
-        row = QHBoxLayout(box)
+        box = QGroupBox("INITIATOR")
+        outer = QVBoxLayout(box)
+
+        radio_row = QHBoxLayout()
+        self._initiator_usb_radio = QRadioButton("USB")
+        self._initiator_ble_radio = QRadioButton("Bluetooth (puente nRF52840)")
+        self._initiator_usb_radio.setChecked(True)
+        self._initiator_usb_radio.toggled.connect(self._on_initiator_mode_toggled)
+        radio_row.addWidget(self._initiator_usb_radio)
+        radio_row.addWidget(self._initiator_ble_radio)
+        radio_row.addStretch(1)
+        outer.addLayout(radio_row)
+
+        row = QHBoxLayout()
         self._initiator_port_combo = QComboBox()
+        self._initiator_ble_combo = QComboBox()
+        self._initiator_ble_combo.setEnabled(False)
         self._initiator_connect_btn = QPushButton("Conectar")
         self._initiator_connect_btn.clicked.connect(self._connect_initiator)
         self._initiator_status = QLabel("Desconectado")
-        row.addWidget(QLabel("Puerto:"))
+        row.addWidget(QLabel("Puerto/dirección:"))
         row.addWidget(self._initiator_port_combo, 1)
+        row.addWidget(self._initiator_ble_combo, 1)
         row.addWidget(self._initiator_connect_btn)
         row.addWidget(self._initiator_status)
+        outer.addLayout(row)
         return box
+
+    def _on_initiator_mode_toggled(self) -> None:
+        is_ble = self._initiator_ble_radio.isChecked()
+        self._initiator_port_combo.setEnabled(not is_ble)
+        self._initiator_ble_combo.setEnabled(is_ble)
 
     def _build_responder_box(self) -> QGroupBox:
         box = QGroupBox("RESPONDER")
@@ -142,10 +164,12 @@ class ConnectionView(QWidget):
         for board in usb_boards:
             self._initiator_port_combo.addItem(board.port)
             self._responder_usb_combo.addItem(board.port)
+        self._initiator_ble_combo.clear()
         self._responder_ble_combo.clear()
         for ble_board in ble_boards:
             name = getattr(ble_board, "name", "") or "(sin nombre)"
             address = getattr(ble_board, "address", "")
+            self._initiator_ble_combo.addItem(f"{name} — {address}", address)
             self._responder_ble_combo.addItem(f"{name} — {address}", address)
         self._scan_status.setText(
             f"{len(usb_boards)} placa(s) USB, {len(ble_boards)} puente(s) BLE encontrados."
@@ -158,13 +182,21 @@ class ConnectionView(QWidget):
     # -------------------------------------------------------- INITIATOR
 
     def _connect_initiator(self) -> None:
-        port = self._initiator_port_combo.currentText()
-        if not port:
-            self._initiator_status.setText("Elegí un puerto primero.")
-            return
+        if self._initiator_ble_radio.isChecked():
+            address = self._initiator_ble_combo.currentData()
+            if not address:
+                self._initiator_status.setText("Elegí un puente BLE primero (o escaneá).")
+                return
+            worker = ConnectWorker(lambda: _connect_ble(address))
+        else:
+            port = self._initiator_port_combo.currentText()
+            if not port:
+                self._initiator_status.setText("Elegí un puerto primero.")
+                return
+            worker = ConnectWorker(lambda: _connect_usb(port))
+
         self._initiator_connect_btn.setEnabled(False)
         self._initiator_status.setText("Conectando...")
-        worker = ConnectWorker(lambda: _connect_usb(port))
         thread = start_worker(worker)
         worker.connected.connect(self._on_initiator_connected)
         worker.failed.connect(self._on_initiator_connect_failed)
