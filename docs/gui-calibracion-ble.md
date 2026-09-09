@@ -1,13 +1,19 @@
-# Guía de uso — Calibración con ambos nodos por Bluetooth (GUI)
+# Guía de uso — Calibración y medición con ambos nodos por Bluetooth (GUI)
 
-> **Propósito:** explicar cómo usar la pestaña **"Calibración BLE"** de
-> `dwm-gui`, que permite calibrar el retardo de antena de un nodo Qorvo
-> DWM3001C con **las dos placas conectadas por Bluetooth** (cada una vía su
-> puente nRF52840), sin ningún cable USB.
-> **Alcance:** rama `feature/gui-calibracion-ble-ambos-nodos` (basada en
-> `hardware/ble-bridge-nrf52840`). Complementa
+> **Propósito:** explicar cómo usar las pestañas **"Calibración BLE"** y
+> **"Medir"** de `dwm-gui`, que permiten calibrar el retardo de antena (o
+> simplemente medir distancia, sin calibrar) de un nodo Qorvo DWM3001C con
+> **las dos placas conectadas por Bluetooth** (cada una vía su puente
+> nRF52840), sin ningún cable USB.
+> **Alcance:** rama `hardware/ble-bridge-nrf52840`. Complementa
 > [rama-hardware-ble.md](rama-hardware-ble.md) (setup del puente) y
 > [resultados-calibracion.md](resultados-calibracion.md) (procedimiento).
+>
+> **[2026-09-09, pedido explícito del usuario]** Esta rama dejó `dwm-gui` con
+> **solo estas dos pestañas** — las pestañas USB (Conexión/Terminal/Validar/
+> Calibrar) generaban confusión al convivir con el flujo BLE y se sacaron de
+> la ventana (el código sigue en el repo, solo dejó de estar cableado en
+> `gui/main_window.py`; ver docstring de ese módulo).
 
 ---
 
@@ -110,7 +116,43 @@ correr otra calibración sin reiniciar la aplicación.
   si algo falla, **siempre** se cierran ambos antes de reportar el error.
 - Reportes y backups se escriben en `reports/` igual que en la CLI.
 
-## 5. Limitaciones conocidas
+## 5. Pestaña "Medir" (sin calibrar)
+
+> **[Agregado 2026-09-09, pedido explícito del usuario]** Para cuando solo
+> hace falta ver la distancia entre dos nodos (verificar montaje, comparar
+> contra una calibración ya hecha, etc.) sin correr el bucle de calibración
+> ni tocar `ant_delay`.
+
+Mismo escaneo + filtro + selección de dos nodos que en "Calibración BLE"
+(§2.1-§2.3), pero:
+
+- No pide distancia real, muestras por medición, tolerancia, iteraciones ni
+  `SAVE` — no hay nada que calibrar, así que no hay nada que confirmar.
+- Dos botones: **"Iniciar medición"** conecta ambos nodos, arranca la sesión
+  TWR (`RESPF` + `INITF`, roles INITIATOR/RESPONDER igual que en calibración)
+  y empieza a leer mediciones sin límite de cantidad ni de tiempo; **"Frenar
+  medición"** (habilitado recién mientras hay una medición corriendo) pide
+  terminar — el pedido se atiende entre una lectura y la siguiente (bloques
+  de ~0.6 s), nunca instantáneo pero sí rápido.
+- Igual que "Calibración BLE": batería/versión de firmware del puente se
+  muestran por nodo apenas conecta (ver §3, mismo mecanismo,
+  `BleDeviceStatus`), y la etiqueta grande de distancia en vivo se actualiza
+  con cada medición — acá además muestra el **desvío estándar** de la
+  ventana móvil (últimas 20 mediciones exitosas), no solo la media.
+- Al frenar (o si la sesión termina sola por un error), un renglón de
+  "Resumen" en el log deja la media, desvío, mínimo y máximo de **toda** la
+  sesión (no solo la ventana móvil de 20).
+- Implementación: `BleMeasureWorker` en
+  [`gui/workers.py`](../src/dwm3001c_cli/gui/workers.py) — mismo patrón de
+  apertura/cierre de transportes que `BlePairCalibrationWorker` (§4), pero
+  sin el bucle de ajuste de `autocalibrate`: arranca la sesión una sola vez y
+  lee mediciones en bloques cortos hasta que se pide frenar. El frenado usa
+  un `threading.Event` (no una señal Qt): mientras `run()` está bloqueado
+  leyendo, el hilo del worker todavía no llegó al loop de eventos de Qt, así
+  que una señal en cola no se entregaría a tiempo — `Event.set()` sí es
+  seguro de llamar directamente desde el hilo de UI.
+
+## 6. Limitaciones conocidas
 
 - El rol por BLE es siempre el descrito arriba (INITIATOR = referencia,
   RESPONDER = a calibrar); no hay modo de invertirlos desde la GUI.
