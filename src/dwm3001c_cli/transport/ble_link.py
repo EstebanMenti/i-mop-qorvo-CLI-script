@@ -53,6 +53,24 @@ NUS_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
 NUS_RX_CHAR_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"  # PC -> nRF (write)
 NUS_TX_CHAR_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"  # nRF -> PC (notify)
 
+# [Agregado 2026-09-09, firmware del puente actualizado] Servicio "Qorvo
+# Stream" (doc/00_BLE_Protocol_Specification.md §5.4/§7.7 de
+# I-mop-nrf52840-fw): canal BLE dedicado, solo Notify, para streaming
+# continuo de SESSION_INFO_NTF durante una sesión de ranging activa —
+# reemplaza depender de NUS TX para esto. Motivo: el canal de comandos
+# shell-NUS (``qorvo <cmd>``) es petición/respuesta con una ventana acotada
+# (silencio 400ms / timeout duro 8000ms) y, al vencer esa ventana, el puente
+# suspendía el UART hacia el Qorvo incondicionalmente — con SESSION_INFO_NTF
+# llegando cada ~200ms durante el ranging, el silencio nunca se cumplía, así
+# que la ventana corría siempre hasta los 8000ms y todo lo que el Qorvo
+# transmitía después se perdía (la ISR de recepción quedaba deshabilitada)
+# hasta el próximo comando — confirmado contra hardware real: ráfagas de
+# ~40 notificaciones (8000ms / 200ms) y silencio total después, sin ninguna
+# desconexión BLE de por medio. Activado con ``enable_stream()`` (comando
+# reservado ``qorvo stream on``, igual mecanismo que ``power_on()``).
+STREAM_SERVICE_UUID = "019dad38-2b03-4df9-ac87-70ce530540fb"
+STREAM_DATA_CHAR_UUID = "36a9a2d9-a035-440f-8e59-ff0a72b2ba51"  # nRF -> PC (notify)
+
 # Prompt del shell de Zephyr tras cada respuesta (ej. "bt_nus:~$ "); no es
 # contenido del Qorvo, hay que descartarlo antes de que lo vea DwmCliClient.
 _PROMPT_RE = re.compile(r"^\S*:~\$\s*$")
@@ -169,6 +187,12 @@ class BleTransport:
         self._thread: threading.Thread | None = None
         self._assembler = LineAssembler()
         self._rx_queue: queue.Queue[str] = queue.Queue()
+        # Canal separado para el streaming de ranging (característica
+        # "Qorvo Stream Data"): nunca comparte cola con las respuestas de
+        # comando (_rx_queue), para que un STAT de keepalive no se coma (ni
+        # contamine) notificaciones SESSION_INFO_NTF en curso, ni viceversa.
+        self._stream_assembler = LineAssembler()
+        self._stream_queue: queue.Queue[str] = queue.Queue()
         self._pending_error: str | None = None
         # [Bug real, verificado 2026-08-25 contra hardware real] Copias planas
         # de estado, actualizadas solo desde el hilo dedicado de bleak
@@ -187,7 +211,9 @@ class BleTransport:
     # ------------------------------------------------------------- ciclo de vida
 
     def open(self) -> None:
-        """Conecta, habilita notificaciones y enciende el módulo Qorvo (``qorvo on``)."""
+        """Conecta, habilita notificaciones, enciende el módulo Qorvo (``qorvo
+        on``) y activa el streaming continuo de ranging (``qorvo stream on``,
+        ver :meth:`enable_stream`)."""
         if self._thread is not None:
             return
         self._loop = asyncio.new_event_loop()
@@ -200,6 +226,9 @@ class BleTransport:
         self._run_coro(self._connect(), timeout_s=self._connect_timeout_s * _CONNECT_ATTEMPTS)
         self.power_on()
         time.sleep(self._power_on_settle_s)
+        # El Qorvo debe estar encendido antes de aceptar el comando (mismo
+        # precondición que cualquier otro `qorvo <cmd>`, ver power_on()).
+        self.enable_stream()
 
     def close(self) -> None:
         if self._loop is None:
@@ -263,7 +292,25 @@ class BleTransport:
         self._pending_error = None
 
     def read_line(self, timeout_s: float) -> str | None:
-        """Devuelve la próxima línea, o ``None`` si venció ``timeout_s``.
+        """Devuelve la próxima línea de respuesta de comando, o ``None`` si
+        venció ``timeout_s``. Ver :meth:`_read_from_queue`."""
+        return self._read_from_queue(self._rx_queue, timeout_s, what="respuesta")
+
+    def read_notification_line(self, timeout_s: float) -> str | None:
+        """Devuelve la próxima línea del canal de streaming BLE dedicado
+        (característica "Qorvo Stream Data", ver :data:`STREAM_DATA_CHAR_UUID`
+        y :meth:`enable_stream`), o ``None`` si venció ``timeout_s``. Ver
+        :meth:`_read_from_queue`.
+        """
+        return self._read_from_queue(self._stream_queue, timeout_s, what="datos de streaming")
+
+    def _read_from_queue(
+        self, source: queue.Queue[str], timeout_s: float, *, what: str
+    ) -> str | None:
+        """Lógica de lectura compartida por ``read_line`` y
+        ``read_notification_line``: mismo criterio de reconexión tolerante,
+        cada una sobre su propia cola (``_rx_queue``/``_stream_queue`` — nunca
+        se mezclan, ver comentario en ``__init__``).
 
         Sondea en pasos cortos (no un único ``queue.get`` bloqueante) para
         poder detectar una desconexión o un timeout del puente mientras se
@@ -290,12 +337,12 @@ class BleTransport:
                 raise TransportError(f"{self.name}: {error}")
             remaining = deadline - time.monotonic()
             try:
-                return self._rx_queue.get(timeout=min(poll_s, max(0.0, remaining)))
+                return source.get(timeout=min(poll_s, max(0.0, remaining)))
             except queue.Empty:
                 pass
             if self._client is not None and not self._connected:
                 if reconnects_left <= 0:
-                    raise TransportError(f"{self.name}: conexión BLE perdida esperando respuesta")
+                    raise TransportError(f"{self.name}: conexión BLE perdida esperando {what}")
                 reconnects_left -= 1
                 reconnect_start = time.monotonic()
                 self._ensure_connected()
@@ -322,6 +369,30 @@ class BleTransport:
         """``qorvo off``: apaga el módulo Qorvo (ver :meth:`power_on`)."""
         text = "off" if hold_s is None else f"off -t {hold_s:g}s"
         self._send_with_retry(text)
+        self._drain_response()
+
+    def enable_stream(self) -> None:
+        """``qorvo stream on``: activa el streaming continuo de ranging por la
+        característica dedicada (:data:`STREAM_DATA_CHAR_UUID`, ver comentario
+        junto a esa constante).
+
+        Palabra reservada del firmware puente, igual mecanismo que
+        :meth:`power_on` (no pasa por ``write_line``): la confirmación
+        (``"Qorvo streaming: ON"``) llega por el canal de comandos normal
+        (NUS TX), sin marcador ``ok`` — se drena igual que la de ``power_on``.
+        """
+        self._send_with_retry("stream on")
+        self._drain_response()
+
+    def disable_stream(self) -> None:
+        """``qorvo stream off`` (ver :meth:`enable_stream`).
+
+        No es obligatorio llamarlo antes de desconectar — el streaming se
+        apaga solo con la conexión BLE (ver doc del firmware puente) — pero
+        es buena práctica hacerlo si se lo va a reactivar más adelante sobre
+        la misma conexión.
+        """
+        self._send_with_retry("stream off")
         self._drain_response()
 
     def _drain_response(self, quiet_s: float | None = None) -> None:
@@ -382,28 +453,61 @@ class BleTransport:
         # reconecta solo) es deliberado — ver docs/rama-hardware-ble.md §8.
         logger.warning("%s: reconectando (conexión BLE inactiva o caída)", self.name)
         self._run_coro(self._connect(), timeout_s=self._connect_timeout_s * _CONNECT_ATTEMPTS)
+        # [Bug real, 2026-09-09, hardware real] El streaming (ver
+        # enable_stream()) se apaga solo al desconectarse el BLE — es estado
+        # de la conexión GATT, no algo persistente como el encendido físico
+        # del Qorvo (power_on(), que es un GPIO y no hace falta reafirmar acá).
+        # Antes de este fix, una reconexión automática (p. ej. el timeout de
+        # inactividad de ~7-8s cayendo justo antes de arrancar el ranging)
+        # dejaba el streaming apagado sin que nada lo notara: las
+        # notificaciones de esa sesión no llegaban por ningún canal —
+        # confirmado contra hardware real, GUI real: "0 notificaciones
+        # recibidas en 100s" con el enlace BLE sano el resto del tiempo.
+        self.enable_stream()
 
     async def _connect(self) -> None:
         last_error: Exception | None = None
+        # [Mitigación 2026-09-09, motivada por hardware real] Cada reconexión
+        # completa re-enumera todos los servicios/características del puente
+        # por defecto — costo evitable, ya que solo se usa NUS. Se limita el
+        # descubrimiento a ese único servicio y se le pide a Windows reusar su
+        # caché de servicios ya conocido (``use_cached_services``), lo que
+        # acelera la reconexión tras uno de los cortes espontáneos del puente
+        # (ver docstring del módulo). Riesgo: si el catálogo GATT del puente
+        # cambiara entre conexiones (p. ej. reflasheo de su firmware a mitad
+        # de sesión), el caché quedaría desactualizado y esa conexión
+        # fallaría. Por eso el caché es solo el camino rápido del primer
+        # intento: cualquier fallo lo desactiva para el resto de los
+        # intentos de esta llamada, priorizando terminar de conectar (más
+        # lento, sin caché) por sobre la velocidad.
+        use_cached_services = True
         for attempt in range(1, _CONNECT_ATTEMPTS + 1):
             # Nunca reusar el cliente anterior: tras una caída GATT su objeto
             # WinRT queda cerrado (RO_E_CLOSED) y hasta que Windows libera la
             # sesión puede fallar incluso la conexión nueva — por eso se
             # descarta y se reintenta con clientes nuevos.
             await self._dispose_client()
-            client = self._client_factory(self._address, disconnected_callback=self._on_disconnect)
+            client = self._client_factory(
+                self._address,
+                disconnected_callback=self._on_disconnect,
+                services=[NUS_SERVICE_UUID, STREAM_SERVICE_UUID],
+                winrt={"use_cached_services": use_cached_services},
+            )
             try:
                 await client.connect()
                 await client.start_notify(NUS_TX_CHAR_UUID, self._on_notify)
+                await client.start_notify(STREAM_DATA_CHAR_UUID, self._on_stream_notify)
             except (BleakError, OSError) as exc:
                 last_error = exc
                 logger.warning(
-                    "%s: intento %d/%d de conexión falló: %s",
+                    "%s: intento %d/%d de conexión falló (caché de servicios=%s): %s",
                     self.name,
                     attempt,
                     _CONNECT_ATTEMPTS,
+                    use_cached_services,
                     exc,
                 )
+                use_cached_services = False
                 await self._safe_disconnect(client)
                 if attempt < _CONNECT_ATTEMPTS:
                     await asyncio.sleep(_CONNECT_RETRY_DELAY_S)
@@ -411,7 +515,12 @@ class BleTransport:
             self._client = client
             self._connected = True
             self._mtu_size = client.mtu_size
-            logger.debug("%s: conectado, MTU=%s", self.name, self._mtu_size)
+            logger.debug(
+                "%s: conectado, MTU=%s, caché de servicios=%s",
+                self.name,
+                self._mtu_size,
+                use_cached_services,
+            )
             return
         raise TransportError(
             f"{self.name}: no se pudo conectar tras {_CONNECT_ATTEMPTS} intentos: {last_error}"
@@ -440,6 +549,7 @@ class BleTransport:
         try:
             if self._connected:
                 await self._client.stop_notify(NUS_TX_CHAR_UUID)
+                await self._client.stop_notify(STREAM_DATA_CHAR_UUID)
                 await self._client.disconnect()
         finally:
             self._client = None
@@ -510,3 +620,14 @@ class BleTransport:
                 continue
             logger.debug("RX %s: %s", self.name, line)
             self._rx_queue.put(line)
+
+    def _on_stream_notify(self, _sender: object, data: bytearray) -> None:
+        """Callback de la característica dedicada de streaming (ver
+        :data:`STREAM_DATA_CHAR_UUID`) — cola separada de ``_on_notify``, sin
+        el filtro de prompt de shell ni el marcador de timeout del puente:
+        este canal es un passthrough del UART del Qorvo, no pasa por el shell
+        de comandos (ver comentario junto a ``STREAM_SERVICE_UUID``).
+        """
+        for line in self._stream_assembler.feed(bytes(data)):
+            logger.debug("STREAM %s: %s", self.name, line)
+            self._stream_queue.put(line)

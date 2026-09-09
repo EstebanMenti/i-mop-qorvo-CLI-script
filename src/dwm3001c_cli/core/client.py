@@ -595,7 +595,7 @@ class DwmCliClient:
                 break
             if deadline is not None and time.monotonic() >= deadline:
                 break
-            line = self._transport.read_line(0.5)
+            line = self._transport.read_notification_line(0.5)
             if line is None:
                 if deadline is None:
                     break
