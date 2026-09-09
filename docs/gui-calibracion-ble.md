@@ -62,19 +62,49 @@ correr otra calibración sin reiniciar la aplicación.
 
 ## 4. Cómo funciona por dentro (notas técnicas)
 
-- El puente nRF52840 **no reenvía notificaciones espontáneas** del Qorvo y el
-  firmware CLI **no tiene comando que consulte la distancia** (ver
-  [referencia-comandos-fw110.md](referencia-comandos-fw110.md) §5.1). Por eso
-  esta herramienta usa el **sampler por polling**
-  ([`calibration/poll_sampler.py`](../src/dwm3001c_cli/calibration/poll_sampler.py)):
-  envía periódicamente un comando *anytime* (`THREAD`) al INITIATOR y parsea
-  las notificaciones `SESSION_INFO_NTF` acumuladas que llegan junto con la
-  respuesta (comportamiento verificado contra hardware real,
-  [verificacion-comandos-responder-ble.md](verificacion-comandos-responder-ble.md) §3.4).
+> **[Corregido 2026-09-09, hardware real]** Esta sección describía antes un
+> sampler por *polling* (`calibration/poll_sampler.py`, comando `THREAD`
+> repetido) porque se creía que el puente nRF52840 no reenviaba
+> notificaciones espontáneas. Esa descripción quedó **obsoleta dos veces**:
+> primero se confirmó que sí las reenvía de forma pasiva (sin polling), y
+> después se encontró que ese reenvío pasivo tenía un techo real de ~8 s por
+> invocación de comando (ver más abajo). El firmware del puente terminó
+> agregando un canal dedicado que resuelve el problema de fondo — es lo que
+> usa la GUI hoy. `poll_sampler.py` sigue en el repo pero **ya no lo usa
+> ningún flujo de la GUI**.
+
+- **Canal de streaming BLE dedicado** (`transport/ble_link.py`,
+  `STREAM_SERVICE_UUID`/`STREAM_DATA_CHAR_UUID`): cada nodo, al conectarse,
+  se suscribe a una característica GATT separada de los comandos (`qorvo
+  <cmd>`) y activa el reenvío continuo con `qorvo stream on`. Las
+  notificaciones `SESSION_INFO_NTF` de la sesión de ranging llegan por ese
+  canal, no por el de comandos — así un `STAT` u otro comando enviado
+  mientras se rankea nunca compite por los mismos datos.
+  - **Por qué hizo falta:** el canal de comandos original es
+    petición/respuesta con una ventana acotada por el firmware puente
+    (silencio 400 ms / timeout duro 8000 ms); con `SESSION_INFO_NTF`
+    llegando cada `BLOCK` ms sin pausa durante el ranging, el silencio nunca
+    se cumplía, la ventana corría siempre hasta los 8000 ms, volcaba una
+    única ráfaga de `8000/BLOCK` notificaciones (~40 con `BLOCK=200`) y
+    **suspendía el UART hacia el Qorvo incondicionalmente** — todo lo que se
+    medía después se perdía hasta el próximo comando. Confirmado contra
+    hardware real y en el código del firmware puente (`qorvo_bridge.c`,
+    `QORVO_TOTAL_TIMEOUT_MS`/`uart_irq_rx_disable()`).
+  - El streaming se apaga solo si la conexión BLE se cae (a diferencia del
+    encendido físico del Qorvo, que persiste) — `BleTransport` lo reactiva
+    automáticamente en cada reconexión (no solo al conectar la primera vez).
+  - Con el streaming activo, **no hace falta ningún keepalive adicional**:
+    el propio tráfico de streaming mantiene viva la conexión BLE. Un
+    keepalive `STAT` periódico se probó y **resultó contraproducente**
+    (reabre la ventana de 8 s del canal de comandos para la respuesta de
+    ese comando específico) — no está en el código actual.
 - El bucle de calibración es el mismo de siempre
   ([`calibration/autocal.py`](../src/dwm3001c_cli/calibration/autocal.py)),
-  ahora con el sampler inyectable: mismo respaldo previo, misma salvaguarda de
-  corrección máxima, misma restauración ante error y mismo reporte en
+  con el sampler inyectable (`_ble_sampler` en
+  [`gui/workers.py`](../src/dwm3001c_cli/gui/workers.py), que llama a
+  `calibration/sampler.py::collect_samples` — la misma función que usa el
+  banco USB-USB): mismo respaldo previo, misma salvaguarda de corrección
+  máxima, misma restauración ante error y mismo reporte en
   `reports/calibracion-*.json`.
 - Los transportes BLE se abren y cierran dentro del worker de la calibración:
   si algo falla, **siempre** se cierran ambos antes de reportar el error.
@@ -86,7 +116,11 @@ correr otra calibración sin reiniciar la aplicación.
   RESPONDER = a calibrar); no hay modo de invertirlos desde la GUI.
 - La reconexión BLE del puente tras ~7-8 s de inactividad es normal (ver
   [rama-hardware-ble.md](rama-hardware-ble.md) §8); el transporte la maneja
-  solo.
+  solo, incluida la reactivación del streaming (ver §4).
+- Requiere el firmware del puente con soporte de streaming (`qorvo stream
+  on|off`, ver `I-mop-nrf52840-fw/doc/00_BLE_Protocol_Specification.md`
+  §5.4/§7.7). Con firmware anterior a ese cambio, la calibración por BLE
+  vuelve a estar limitada a ~40 muestras por sesión (ver §4).
 - Si el escaneo devuelve menos de 2 dispositivos, revisá que ambos puentes
   estén encendidos y que Windows no tenga la sesión Bluetooth ocupada por otra
   aplicación.

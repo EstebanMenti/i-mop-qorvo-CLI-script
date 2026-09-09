@@ -33,11 +33,19 @@ vida en vez de mergearse — ver la excepción documentada en
 | Usar el puente BLE como RESPONDER en calibración | `dwm calibrate --responder-ble-address <addr>` |
 | GUI de escritorio (conexión, terminal manual, validación y calibración con gráfico en vivo) | `dwm-gui` |
 
-El rol Bluetooth es **siempre RESPONDER**, nunca INITIATOR: la calibración y
-la validación solo leen notificaciones `SESSION_INFO_NTF` del lado INITIATOR
-(USB), nunca del lado RESPONDER — esto es compatible con una limitación del
-puente nRF52840, que solo reenvía respuestas a lo que se le pide, no mensajes
-espontáneos del Qorvo.
+El rol Bluetooth es **siempre RESPONDER**, nunca INITIATOR, en el flujo base
+de esta rama (`dwm validate`/`dwm calibrate` con `--second-ble-address`/
+`--responder-ble-address`): la calibración y la validación solo leen
+notificaciones `SESSION_INFO_NTF` del lado INITIATOR (USB), nunca del lado
+RESPONDER.
+
+> **[Ampliado en `feature/gui-calibracion-ble-ambos-nodos`]** La GUI
+> (`dwm-gui`, pestaña "Calibración BLE") sí permite **las dos placas por
+> Bluetooth simultáneamente** (ninguna por USB) — ver
+> [gui-calibracion-ble.md](gui-calibracion-ble.md). Esa extensión fue la que
+> reveló el bug del canal de comandos documentado en §7.3 (con una sola
+> placa por BLE, sesiones de calibración típicas nunca llegaban a los ~8 s
+> que hacía falta para que el problema apareciera).
 
 ## 3. Hardware necesario
 
@@ -185,6 +193,79 @@ el fix: `ensure_mode_none()` + `STAT` + `LISTCAL` (259 claves) corridos en
 secuencia contra la placa real, sin errores, con la implementación de
 producción (`transport/ble_link.py`, no el prototipo).
 
+### 7.3 Bug real de fondo: el canal de comandos suspendía el UART tras 8s de ranging sostenido — corregido con un canal BLE dedicado
+
+[Confirmado contra hardware real y contra el código fuente del firmware
+puente, 2026-09-09] Con ambas placas por BLE (ver nota de §2), sesiones de
+calibración de 100 muestras entregaban siempre **~40 muestras SUCCESS en una
+única ráfaga inicial y silencio total después**, sin ninguna desconexión BLE
+de por medio. Investigado a fondo, en tres etapas:
+
+1. **Síntoma medido**: con `BLOCK=200` ms, el corte ocurría siempre en
+   40-44 muestras — `8000 / 200 = 40`, coincidiendo con un timeout
+   documentado en otro contexto (ver §8, fila del marcador de timeout del
+   puente).
+2. **Causa raíz confirmada en `I-mop-nrf52840-fw/src/qorvo_bridge.c`**: el
+   comando `qorvo <cmd>` (usado también para arrancar `RESPF`/`INITF`) es
+   petición/respuesta: acumula todo lo que llega por UART hasta detectar
+   400 ms de silencio (`QORVO_SILENCE_TIMEOUT_MS`) o vencer un límite duro
+   de 8000 ms (`QORVO_TOTAL_TIMEOUT_MS`). Con `SESSION_INFO_NTF` llegando
+   cada `BLOCK` ms sin pausa durante una sesión de ranging activa, el
+   silencio **nunca se cumple** — la ventana corre siempre hasta los 8000 ms,
+   vuelca todo lo acumulado como si fuera la respuesta de ese comando, y
+   **acto seguido deshabilita la IRQ de recepción UART y suspende el
+   periférico incondicionalmente** (`uart_irq_rx_disable()` +
+   `pm_device_runtime_put()`). El Qorvo sigue midiendo y transmitiendo, pero
+   el puente ya no escucha — sin que haya ninguna desconexión BLE de por
+   medio. El UART solo se reactiva dentro de la invocación de un comando
+   `qorvo` nuevo, que entra en el mismo ciclo. Esta limitación de diseño
+   (petición/respuesta, no streaming) ya estaba documentada por el propio
+   firmware puente (`doc/00_BLE_Protocol_Specification.md`, sección
+   "Limitación conocida de este diseño").
+3. **Corrección en el firmware puente**: nuevo servicio GATT dedicado,
+   solo-Notify, para streaming continuo — `STREAM_SERVICE_UUID`
+   (`019dad38-2b03-4df9-ac87-70ce530540fb`) /
+   `STREAM_DATA_CHAR_UUID` (`36a9a2d9-a035-440f-8e59-ff0a72b2ba51`),
+   documentado en `I-mop-nrf52840-fw/doc/00_BLE_Protocol_Specification.md`
+   §5.4/§7.7. Se activa con el comando reservado `qorvo stream on` (enviado
+   por el canal de comandos normal, igual mecanismo que `qorvo on`/`qorvo
+   off`) y dejar el UART abierto de forma indefinida, reenviando todo por
+   la característica dedicada — el canal de comandos sigue funcionando en
+   paralelo sin cambios. Se apaga con `qorvo stream off`, o solo, al
+   desconectarse el BLE.
+
+**Cambios del lado cliente** (`transport/ble_link.py`):
+
+- `BleTransport` se suscribe a la característica dedicada al conectar y
+  llama a `enable_stream()` (equivalente a `power_on()`, mismo patrón)
+  después de encender el Qorvo. `DwmCliClient.read_notifications()` lee de
+  ese canal (`read_notification_line()`), separado del canal de comandos
+  (`read_line()`) — nunca se mezclan, para que un `STAT` no compita por
+  datos con una sesión de ranging en curso.
+- **[Bug real, corregido]** El streaming es estado de la sesión GATT, no
+  algo persistente como el encendido físico del Qorvo — se apaga solo al
+  caerse la conexión BLE. La primera versión de este fix solo lo activaba
+  una vez, en `open()`; una reconexión automática (el timeout de
+  inactividad de ~7-8 s, fila de abajo, cayendo antes de arrancar el
+  ranging) dejaba el streaming apagado sin que nada lo notara —
+  confirmado contra hardware real, GUI real: "0 notificaciones recibidas
+  en 100 s" con el enlace BLE sano el resto del tiempo. Corregido:
+  `_ensure_connected()` (la reconexión automática de `read_line`/
+  `write_line`) reactiva el streaming después de **cualquier** reconexión,
+  no solo la primera vez.
+- Se probó (y se descartó) un keepalive `STAT` periódico al RESPONDER
+  durante el muestreo, portado del repo hermano `i-mop-tools-measure` —
+  necesario cuando las notificaciones viajaban por el canal de comandos,
+  contraproducente con el streaming dedicado activo (reabre la ventana de
+  8 s del canal de comandos para la respuesta de ese `STAT` específico).
+
+**Verificado contra hardware real** (UWB-Node-6/UWB-Node-8, firmware puente
+actualizado): sesión de 100 muestras, 100/100 SUCCESS, flujo continuo
+(~200 ms entre muestras, sin ráfagas ni huecos), ~20 s de ranging efectivo —
+el comportamiento nominal esperado. Repetido varias veces sin regresión,
+incluida una corrida donde la reconexión automática ocurrió en vivo antes
+de arrancar el ranging y el streaming se reactivó correctamente.
+
 ## 8. Riesgos e incertidumbres a verificar contra hardware real
 
 No inventar comportamiento no documentado — esta tabla se actualiza con el
@@ -202,7 +283,7 @@ resultado real de F10.
 | Texto exacto del marcador de timeout del puente | Necesario para detectarlo y relanzarlo como `TransportError` | **Confirmado con hardware real** (2026-08-13): llega fragmentado en 3 notificaciones — `'Error: sin respues'` + `'ta del modul'` + `'o Qorvo (timeout)\r\n'` — y la duración real medida fue ~8.26 s (coincide con el límite duro de 8000 ms documentado) |
 | **[Nuevo, no anticipado]** La conexión BLE se cae sola ~7-8 s después de la última actividad (éxito o timeout, mismo patrón en ambos casos) | `BleTransport` no puede asumir una conexión persistente de larga duración entre comandos; probablemente necesite reconectar por comando o tras inactividad | **Confirmado** (2026-08-13, smoke test propio, dos corridas): desconexión espontánea detectada por `disconnected_callback` ~7.7-7.9 s después del último dato recibido, en ambas corridas (una con timeout del bridge, otra con respuesta exitosa) — a investigar más en F8/F10 si es un supervision timeout de BLE o algo propio del firmware puente |
 | `qorvo on` sin `-t`/`--time` deja el módulo encendido indefinidamente; con `-t 60s` se apaga solo | Si el módulo se apaga solo, cualquier comando posterior da timeout del puente aunque la placa y el puente estén bien | **Confirmado por observación**: un `qorvo stat` mandado minutos después de un `qorvo on --time 60s` (probado desde celular) dio el timeout de 8 s de arriba; al mandar `qorvo on` (sin límite) antes, `qorvo stat` funcionó de inmediato. `BleTransport`/GUI deberían encender explícitamente antes de operar, no asumir que el módulo ya está alimentado |
-| Reconexión ante un corte BLE (a diferencia de `SerialLink`, que nunca reconecta sola) | Dado que la conexión se cae sola cada ~7-8s de inactividad (fila de arriba), *no* reconectar habría roto cualquier secuencia de comandos con pausas | **Decisión deliberada, implementada**: `write_line()` reconecta automáticamente si detecta la conexión caída (`_ensure_connected()`), a diferencia de `SerialLink`. Documentado como desvío consciente en `transport/ble_link.py` y probado sin hardware (`test_reconnects_automatically_after_disconnect`); falta medir en F10 la latencia real de una reconexión a mitad de una calibración larga |
+| Reconexión ante un corte BLE (a diferencia de `SerialLink`, que nunca reconecta sola) | Dado que la conexión se cae sola cada ~7-8s de inactividad (fila de arriba), *no* reconectar habría roto cualquier secuencia de comandos con pausas | **Decisión deliberada, implementada**: `write_line()`/`read_notification_line()` reconectan automáticamente si detectan la conexión caída (`_ensure_connected()`), a diferencia de `SerialLink`. Documentado como desvío consciente en `transport/ble_link.py` y probado sin hardware (`test_reconnects_automatically_after_disconnect`). **[Bug real, corregido, ver §7.3]** La reconexión automática no reactivaba el streaming BLE dedicado — corregido: `_ensure_connected()` llama a `enable_stream()` tras cada reconexión, no solo la primera vez en `open()`. Medido en F10 y de nuevo en la campaña de streaming: reconexión típica ~7-9s, sin pérdida de datos posterior |
 | **[Bug real, corregido]** `power_on()`/`power_off()` no leían su propia respuesta (`"Qorvo status changed to: ..."`, sin marcador `ok`) | La línea quedaba en la cola y el siguiente comando real la heredaba como si fuera su propia respuesta — rompió el parseo de `STAT` en la primera prueba con hardware real | **Confirmado y corregido** (2026-08-13): `power_on()`/`power_off()` ahora drenan su respuesta con `_drain_response()` antes de devolver el control — ver §7.2 |
 | **[Bug real, corregido]** `quiet_period_s=0.3` (default de USB) insuficiente para BLE — se midieron gaps de ~590ms entre fragmentos de una respuesta sana | Cortaba la lectura a mitad de respuesta, con el mismo síntoma que el bug de arriba | **Confirmado y corregido** (2026-08-13): `DwmCliClient` ahora acepta `quiet_period_s` en el constructor; `app/cli.py` usa `1.5s` para clientes BLE (`_BLE_QUIET_PERIOD_S`) — ver §7.2 |
 | Escritura de `RESPF`/`INITF` completo (~130+ caracteres) y de `CALKEY <clave> <valor>` | Necesario para calibración y para reconfigurar direccionamiento FiRa | **[CRÍTICO, RESUELTO]** Confirmado con hardware real (F10, 2026-08-13, primera tanda) que **no era confiable**: `CALKEY <clave> <valor>` falló 0/5-6 intentos; `RESPF` con parámetros completos funcionó 1/7 veces y falló las 6 siguientes, incluso tras power-cycle físico del nRF52840. Descartado exhaustivamente como causa del lado cliente. **El usuario actualizó el firmware del puente nRF52840 y el problema desapareció**: segunda tanda de F10, mismo día, `CALKEY` 4/4 y `RESPF` consistente en todas las corridas — ver `docs/resultados-verificacion-ble.md` §3.4 |
