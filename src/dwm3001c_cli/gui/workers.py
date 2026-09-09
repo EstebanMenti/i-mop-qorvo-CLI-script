@@ -262,8 +262,20 @@ class BlePairCalibrationWorker(QObject):
     # [Verificado 2026-08-13, hardware real] Por BLE los gaps entre fragmentos
     # llegan a ~590 ms: la capa app debe usar quiet_period_s ~1.5 y un timeout
     # de comando holgado (ver docstring de DwmCliClient).
+    #
+    # [Bug real, 2026-09-09, hardware real] 10.0s no alcanzaba para INITF
+    # específicamente: al arrancar la sesión, el módulo empieza a rankear
+    # de inmediato y, durante una ventana de transición, sus notificaciones
+    # SESSION_INFO_NTF salen (además de por el canal de streaming dedicado)
+    # también por el canal de comandos normal (NUS TX) — el mismo que está
+    # entregando el eco multilínea de INITF más su "ok" de cierre. Esa
+    # competencia por el mismo canal se confirmó demorando la respuesta
+    # completa de INITF hasta ~10.4s en una corrida real (echo+bloque FiRa
+    # llegó a los ~8.5s, pero el "ok" final recién a los ~10.4s) — un fallo
+    # limpio de "Sin respuesta ... tras 10.0s de espera" pese a que el
+    # comando sí se había procesado. Subido con margen real, no arbitrario.
     _QUIET_PERIOD_S = 1.5
-    _COMMAND_TIMEOUT_S = 10.0
+    _COMMAND_TIMEOUT_S = 20.0
 
     def __init__(
         self,

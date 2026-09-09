@@ -26,8 +26,14 @@ from dwm3001c_cli.transport.serial_link import SerialLink, Transport
 # [Verificado 2026-08-13, hardware real] Mismo valor que _BLE_QUIET_PERIOD_S
 # en app/cli.py — el default de DwmCliClient (0.3s, calibrado para USB) corta
 # la lectura a mitad de respuesta por BLE.
+#
+# [Bug real, 2026-09-09, hardware real] 10.0s no alcanza para INITF: al
+# arrancar la sesión, sus SESSION_INFO_NTF compiten por el mismo canal de
+# comandos con el eco/"ok" de INITF durante una ventana de transición —
+# confirmado tardando hasta ~10.4s en una corrida real (ver comentario
+# equivalente en BlePairCalibrationWorker, gui/workers.py).
 _BLE_QUIET_PERIOD_S = 1.5
-_BLE_COMMAND_TIMEOUT_S = 10.0
+_BLE_COMMAND_TIMEOUT_S = 20.0
 
 
 def _connect_usb(port: str) -> tuple[Transport, DwmCliClient]:
