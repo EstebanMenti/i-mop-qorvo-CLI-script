@@ -489,3 +489,30 @@ class TestStreaming:
             transport.write_line("STAT")  # dispara la reconexión automática
 
             assert client.sent.count(b"qorvo stream on\n") == stream_on_before + 1
+
+    def test_reconnect_does_not_swallow_pending_command_response(self) -> None:
+        """[Bug real #2, 2026-09-09, hardware real] Reenviar "stream on" al
+        reconectar (ver test anterior) no debe drenar ``self._rx_queue``: si
+        lo hace, se come la respuesta real de un comando que ya estaba
+        pendiente antes del corte. Confirmado con hardware real: un ``INITF``
+        completo (más una ráfaga de ``SESSION_INFO_NTF`` de la sesión de
+        ranging que había seguido activa en el firmware durante el corte, y
+        que temporalmente sale por el canal de comandos hasta que el
+        firmware procesa este mismo "stream on") desapareció así, línea por
+        línea, y el comando terminó en un timeout de 10s sin ninguna pista.
+        """
+        fake = FakeBleakClient(ADDRESS)
+        transport, client = make_transport(fake)
+
+        with transport:
+            client.simulate_disconnect()
+            # La respuesta real del comando pendiente (p. ej. el eco de
+            # INITF) ya está en la cola cuando se dispara la reconexión —
+            # simula la ráfaga que el firmware entrega de una sola vez al
+            # reconectar, antes de que el llamador original la lea.
+            transport._rx_queue.put("ok")
+
+            transport._ensure_connected()
+
+            assert transport._rx_queue.get_nowait() == "ok"
+        assert b"qorvo stream on\n" in client.sent

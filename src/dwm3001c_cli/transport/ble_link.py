@@ -463,7 +463,30 @@ class BleTransport:
         # notificaciones de esa sesión no llegaban por ningún canal —
         # confirmado contra hardware real, GUI real: "0 notificaciones
         # recibidas en 100s" con el enlace BLE sano el resto del tiempo.
-        self.enable_stream()
+        #
+        # [Bug real #2, 2026-09-09, hardware real] Reenviar "stream on" acá
+        # NO debe usar enable_stream() (que hace _drain_response(), leyendo y
+        # descartando de self._rx_queue hasta que haya silencio): si este
+        # reconnect ocurre en medio de un read_line()/read_notification_line()
+        # que ya está esperando la respuesta de un comando enviado ANTES de
+        # la caída (p. ej. INITF), esa respuesta puede llegar recién ahora,
+        # tras reconectar — y cae en la MISMA cola (_rx_queue) que el drain
+        # está vaciando. Confirmado con hardware real: el eco completo de
+        # INITF (más una ráfaga de SESSION_INFO_NTF de la sesión de ranging
+        # que había seguido activa del lado del firmware durante el corte,
+        # que temporalmente sale por el canal de comandos en vez del de
+        # streaming hasta que el firmware procesa este mismo "stream on")
+        # quedó registrado como "descartada tras encender/apagar" línea por
+        # línea durante ~2.8s seguidos — el llamador original nunca vio la
+        # respuesta real y terminó en un timeout de 10s sin ninguna pista.
+        # Mandar el comando sin drenar es seguro: no toca self._rx_queue
+        # (bypassea write_line(), como ya hacían power_on/power_off/
+        # enable_stream para no interferir con el marcador de comando en
+        # curso), así que cualquier respuesta pendiente sigue disponible para
+        # quien la estaba esperando; el resto de la cola (la confirmación
+        # "Qorvo streaming: ON" y cualquier ráfaga vieja) se descarta solo
+        # con el próximo comando real, vía _reset_pending() en write_line().
+        self._send_with_retry("stream on")
 
     async def _connect(self) -> None:
         last_error: Exception | None = None
