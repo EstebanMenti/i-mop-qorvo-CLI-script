@@ -44,9 +44,16 @@ def _default_sampler(
     session_params: SessionParams,
     on_measurement: Callable[[Measurement], None] | None = None,
 ) -> RangingStats:
-    """Sampler clásico (lectura pasiva de notificaciones, banco USB-USB)."""
-    del on_measurement  # collect_samples no emite mediciones individuales
-    return collect_samples(initiator, responder, n_samples=n_samples, session_params=session_params)
+    """Sampler clásico (lectura pasiva de notificaciones); sirve tanto para el
+    banco USB-USB como para el initiator detrás del puente BLE (verificado
+    contra hardware real, ver docstring de ``calibration/sampler.py``)."""
+    return collect_samples(
+        initiator,
+        responder,
+        n_samples=n_samples,
+        session_params=session_params,
+        on_measurement=on_measurement,
+    )
 
 
 logger = logging.getLogger(__name__)
@@ -110,6 +117,7 @@ def autocalibrate(
     on_iteration: Callable[[CalibrationIteration], None] | None = None,
     on_measurement: Callable[[Measurement], None] | None = None,
     sampler: SamplerFn | None = None,
+    session_params: SessionParams | None = None,
 ) -> CalibrationReport:
     """Calibra el retardo de antena de ``device`` contra ``reference``.
 
@@ -131,6 +139,27 @@ def autocalibrate(
             pasiva de notificaciones, initiator por USB). Para el initiator
             detrás del puente BLE pasar
             :func:`~dwm3001c_cli.calibration.poll_sampler.collect_samples_polled`.
+        session_params: parámetros FiRa de la sesión; por defecto
+            ``SessionParams(chan=cfg.channel)`` (resto en los valores de
+            fábrica, ``block_ms=200``).
+
+            [Descartado 2026-09-09, hardware real, UWB-Node-6/-8] Se probó
+            subir ``block_ms`` a 800 para el flujo con ambas placas por
+            Bluetooth (la hipótesis era que ``block_ms=200``, con 5
+            rondas/s, generaba más ``SESSION_INFO_NTF`` de las que el
+            puente podía drenar). Contra hardware real dio **peor**
+            resultado, no mejor: con ``block_ms=800`` la sesión de ranging
+            entregó exactamente una notificación SUCCESS y después quedó en
+            silencio total el resto de la ventana (reproducido dos veces,
+            sin ningún corte de conexión BLE de por medio — el enlace
+            seguía activo, la sesión de ranging simplemente dejó de generar
+            rondas). Con el default ``block_ms=200`` en cambio se
+            completaron 15/15 muestras SUCCESS en la misma prueba (con un
+            corte/reconexión BLE a mitad de camino que entregó las
+            notificaciones acumuladas de una vez, pero sin pérdida de
+            datos). No usar valores de ``block_ms`` mayores al default de
+            fábrica para el flujo BLE sin volver a validar contra hardware
+            real primero.
 
     Raises:
         CalibrationError: enlace pobre, sensibilidad no medible, salvaguarda
@@ -142,7 +171,7 @@ def autocalibrate(
         raise ValueError(f"Distancia real inválida: {real_distance_m} m")
     real_cm = real_distance_m * 100.0
     key = cfg.key
-    params = SessionParams(chan=cfg.channel)
+    params = session_params if session_params is not None else SessionParams(chan=cfg.channel)
 
     device.ensure_mode_none()
     reference.ensure_mode_none()

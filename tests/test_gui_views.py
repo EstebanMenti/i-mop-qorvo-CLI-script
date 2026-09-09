@@ -27,7 +27,7 @@ from dwm3001c_cli.gui.views.validation_view import ValidationView
 from dwm3001c_cli.transport.ble_discovery import BleBoardInfo
 from dwm3001c_cli.transport.discovery import BoardPort
 from fakes import FakeTransport
-from test_poll_sampler import PollInitiator, SimResponder, TwrWorld
+from test_calibration import SimInitiator, SimResponder, TwrWorld
 
 _LEFT_BUTTON = Qt.MouseButton.LeftButton
 
@@ -362,7 +362,7 @@ class TestBleCalibrationView:
         # Física simulada: delay de fábrica 64 unidades bajo el ideal → error
         # ≈ +30 cm; la calibración debe converger al ideal.
         world = TwrWorld(real_cm=200.0, delay=16375, ideal_delay=16439)
-        initiator_transport = PollInitiator(world)
+        initiator_transport = SimInitiator(world)
         responder_transport = SimResponder(world)
         fake_ble_scan(monkeypatch, ble_devices()[:2])
         # El worker abre los BleTransport dentro de run(): se reemplaza la clase

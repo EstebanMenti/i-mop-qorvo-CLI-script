@@ -18,9 +18,9 @@ from dwm3001c_cli.calibration.autocal import (
     CalibrationReport,
     autocalibrate,
 )
-from dwm3001c_cli.calibration.poll_sampler import collect_samples_polled
+from dwm3001c_cli.calibration.sampler import SessionParams, collect_samples
 from dwm3001c_cli.core.client import DwmCliClient
-from dwm3001c_cli.core.models import ValidationResult
+from dwm3001c_cli.core.models import Measurement, RangingStats, ValidationResult
 from dwm3001c_cli.transport.discovery import BoardPort, find_boards
 from dwm3001c_cli.transport.serial_link import Transport
 from dwm3001c_cli.validation.runner import run_validation
@@ -199,14 +199,58 @@ class BleScanWorker(QObject):
         self.finished.emit(devices)
 
 
+def _ble_sampler(
+    initiator: DwmCliClient,
+    responder: DwmCliClient,
+    *,
+    n_samples: int,
+    session_params: SessionParams,
+    on_measurement: Callable[[Measurement], None] | None = None,
+) -> RangingStats:
+    """Sampler para **ambas placas por Bluetooth**: ``collect_samples`` (lectura
+    pasiva, la misma función que USB-USB) con presupuesto de tiempo más
+    holgado y un piso de muestras más bajo.
+
+    [Verificado 2026-09-09, hardware real, UWB-Node-6/-8, firmware del
+    puente con streaming BLE dedicado — ver ``STREAM_SERVICE_UUID`` en
+    ``transport/ble_link.py``] 100/100 SUCCESS en flujo continuo (~200ms
+    entre muestras, sin ráfagas ni huecos) en una sola sesión de 100
+    muestras. Antes del streaming, el canal de comandos (NUS TX) tenía una
+    ventana acotada a 8s (bug del firmware puente, ya corregido) que
+    limitaba cada sesión a ~40 muestras en una única ráfaga inicial y
+    silencio después — de ahí venían el piso de muestras reducido
+    (``_BLE_MIN_SAMPLES``) y el multiplicador de timeout más generoso
+    (``_BLE_TIMEOUT_MULTIPLIER``) de acá abajo: ya no son estrictamente
+    necesarios, pero se mantienen como margen de seguridad razonable (un
+    enlace BLE puede seguir teniendo hipos puntuales) en vez de ajustarlos
+    al límite sin más evidencia de campo.
+    """
+    block_ms = session_params.block_ms if session_params is not None else SessionParams().block_ms
+    return collect_samples(
+        initiator,
+        responder,
+        n_samples=n_samples,
+        session_params=session_params,
+        timeout_s=n_samples * block_ms * _BLE_TIMEOUT_MULTIPLIER / 1000,
+        min_samples=min(_BLE_MIN_SAMPLES, n_samples),
+        on_measurement=on_measurement,
+    )
+
+
+# Piso de muestras SUCCESS y multiplicador de timeout para el sampler BLE
+# (ver docstring de _ble_sampler): margen de seguridad para hipos puntuales
+# del enlace BLE, no un requisito estricto con el streaming dedicado activo.
+_BLE_MIN_SAMPLES = 30
+_BLE_TIMEOUT_MULTIPLIER = 5
+
+
 class BlePairCalibrationWorker(QObject):
     """Calibración con **ambas placas por Bluetooth** (puentes nRF52840).
 
-    Abre los dos ``BleTransport``, corre ``autocalibrate`` con el sampler por
-    polling (las ``SESSION_INFO_NTF`` no llegan solas por el puente: se obtienen
-    consultando con un comando al initiator) y cierra ambos transportes siempre,
-    incluso ante error. Emite por señal cada medición recibida (para mostrar la
-    distancia en vivo) y cada iteración completada.
+    Abre los dos ``BleTransport``, corre ``autocalibrate`` con
+    :func:`_ble_sampler` y cierra ambos transportes siempre, incluso ante
+    error. Emite por señal cada medición recibida (para mostrar la distancia
+    en vivo) y cada iteración completada.
     """
 
     stage = Signal(str)  # texto de etapa para el banner de estado
@@ -272,7 +316,7 @@ class BlePairCalibrationWorker(QObject):
                 initiator,
                 real_distance_m=self._real_distance_m,
                 config=self._config,
-                sampler=collect_samples_polled,
+                sampler=_ble_sampler,
                 on_iteration=self.iteration_completed.emit,
                 on_measurement=self.measurement_received.emit,
             )
