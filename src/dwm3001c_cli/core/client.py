@@ -40,6 +40,32 @@ logger = logging.getLogger(__name__)
 
 _VALID_APPS = {"LISTENER", "INITF", "RESPF", "NONE"}
 
+# Vocabulario cerrado de comandos de la CLI (Developer Manual / guía §1.1).
+# Usado por send_command para reconocer, cuando la primera línea de una
+# respuesta no es el eco del comando propio, si en cambio es el eco de OTRO
+# comando de este vocabulario: señal de que todo el bloque es la respuesta
+# rezagada de un comando distinto (backlog), no la respuesta del que se acaba
+# de enviar (ver nota "puente BLE" en send_command).
+_CLI_COMMAND_WORDS = {
+    "HELP",
+    "STAT",
+    "STOP",
+    "THREAD",
+    "RESTORE",
+    "LCFG",
+    "DIAG",
+    "DECAID",
+    "SAVE",
+    "SETAPP",
+    "GETOTP",
+    "UART",
+    "CALKEY",
+    "LISTCAL",
+    "INITF",
+    "RESPF",
+    "LISTENER",
+}
+
 # [Verificado 2026-08-06] Tras STOP, el firmware tarda un instante en volver a
 # NONE: un STAT inmediato aún reporta la app anterior corriendo.
 _STOP_SETTLE_S = 0.3
@@ -189,36 +215,119 @@ class DwmCliClient:
         ``"DIAG: 0"``, donde ``:`` sigue inmediatamente, sin espacio de por
         medio: eso es contenido real, no eco).
 
+        [Verificado 2026-09-08, hardware real, puente BLE — UWB-Node-6/-8]
+        Por el puente BLE (rama ``hardware/ble-bridge-nrf52840``), el sampler
+        por polling (``calibration/poll_sampler.py``) reenvía un comando
+        *anytime* (``THREAD``) repetidamente y las notificaciones
+        ``SESSION_INFO_NTF`` que el Qorvo emite durante el ranging se
+        acumulan en el puente y recién se entregan junto con la respuesta del
+        próximo comando (nunca espontáneamente) — a veces decenas de golpe.
+        Como las notificaciones BLE no tienen ACK ni retransmisión, es normal
+        perder alguna; cuando la perdida es justo la que traía el eco+JSON+``ok``
+        real de ``STAT``, o cuando la respuesta de un comando previo (p. ej.
+        ``THREAD``) se demora y queda en la cola justo cuando se envía el
+        siguiente, antes se devolvía ese contenido ajeno como si fuera la
+        respuesta de ``STAT`` — se confirmaron tres variantes reales del mismo
+        defecto: (a) la respuesta rezagada de ``THREAD`` completa, con su
+        propio eco y su propio ``ok``; (b) decenas de notificaciones
+        acumuladas seguidas del eco+``ok`` rezagado de un ``STOP`` anterior
+        (el eco ajeno no estaba en la primera línea, sino al final de un
+        backlog largo); y (c) puro backlog de notificaciones sin ningún eco
+        de por medio, cortado por el período de silencio porque el ``ok``
+        real nunca llegó (notificación perdida). Ahora, para el corte por
+        ``ok``/``ko``: se revisa **cada** línea (no solo la primera) buscando
+        el eco de **otro** comando del vocabulario cerrado de la CLI (guía
+        §1.1) — si aparece, todo el bloque se trata como backlog rezagado y se
+        descarta, sin exigir en general haber visto el eco propio (algunas
+        respuestas reales, p. ej. ``CALKEY`` sobre una clave inexistente, no
+        lo repiten). Para el corte por silencio (sin ``ok``/``ko``): sí se
+        exige haber visto el eco propio — silencio con contenido pero sin eco
+        propio es, con altísima probabilidad, backlog ajeno (caso (c)), nunca
+        una respuesta real. En ambos casos se sigue esperando sin exceder
+        ``timeout_s``, en vez de devolver contenido no atribuible al comando
+        enviado.
+
         Raises:
             CommandTimeoutError: si no llegó ninguna línea dentro del timeout.
         """
         limit = timeout_s if timeout_s is not None else self._command_timeout_s
         quiet_period_s = quiet_period_s if quiet_period_s is not None else self._quiet_period_s
         cmd_upper = cmd.strip().upper()
+        own_word = cmd_upper.split(maxsplit=1)[0] if cmd_upper else ""
         self._transport.write_line(cmd)
         deadline = time.monotonic() + limit
         lines: list[str] = []
         received_any = False
-        echo_checked = False
+        own_echo_seen = False
+        foreign_echo = False
+        foreign_word = ""
+        first_line_pending = True
+        notification_backlog = False
         while True:
+            if time.monotonic() >= deadline:
+                raise CommandTimeoutError(self.name, cmd, limit)
             line = self._transport.read_line(quiet_period_s)
             if line is None:
                 if received_any:
-                    break
-                if time.monotonic() >= deadline:
-                    raise CommandTimeoutError(self.name, cmd, limit)
+                    if own_echo_seen or not notification_backlog:
+                        break
+                    # [Bug real, 2026-09-08, hardware real, UWB-Node-6/-8]
+                    # Silencio tras recibir *algo* que empieza como backlog de
+                    # notificaciones SESSION_INFO_NTF, sin haber visto nunca
+                    # el eco propio (ni un ok/ko, que ya habría cortado
+                    # antes) — se confirmó contra hardware real que esto pasa
+                    # cuando el puente BLE pierde justo la notificación que
+                    # traía el eco+JSON+ok real de STAT (las notificaciones
+                    # BLE no tienen ACK). Devolver ese backlog como si fuera
+                    # la respuesta rompía el parseo; ahora se descarta y se
+                    # sigue esperando, sin exceder timeout_s — un timeout
+                    # franco en vez de un dato silenciosamente incorrecto. No
+                    # se aplica a respuestas que no parecen notificaciones
+                    # (p. ej. un rechazo de SAVE sin eco: ``"error: not
+                    # allowed"``), que sí deben aceptarse tal cual.
+                    logger.warning(
+                        "%s: se descartó una respuesta sin eco propio de %r "
+                        "(silencio, backlog de notificaciones): %r",
+                        self.name,
+                        cmd,
+                        lines,
+                    )
+                    lines = []
+                    received_any = False
+                    foreign_echo = False
+                    foreign_word = ""
+                    first_line_pending = True
+                    notification_backlog = False
                 continue
             stripped = line.strip()
-            if not echo_checked:
-                if stripped == "":
-                    # Línea vacía antes de cualquier contenido real (frecuente
-                    # como residuo entre comandos): se ignora sin contar para
-                    # el timeout ni para la detección de eco.
-                    continue
-                echo_checked = True
-                received_any = True
+            if stripped == "":
+                # Línea vacía (frecuente como residuo entre comandos): se
+                # ignora sin contar para el timeout ni para el eco.
+                continue
+            received_any = True
+            if first_line_pending:
+                first_line_pending = False
+                notification_backlog = stripped.startswith("SESSION_INFO_NTF")
+            if not own_echo_seen and not foreign_echo:
+                # Exige que la línea sea *solo* la palabra del comando (eco
+                # verdadero de un comando sin parámetros, p. ej. "THREAD" a
+                # secas): contenido real que meramente empieza con el nombre
+                # de un comando (p. ej. el listado de "HELP": "STAT - report
+                # status") siempre trae texto pegado a continuación y no debe
+                # confundirse con un eco ajeno. Se revisa en **cada** línea,
+                # no solo la primera: notificaciones SESSION_INFO_NTF
+                # acumuladas pueden preceder por decenas de líneas al eco
+                # ajeno que realmente delata el backlog (verificado 2026-09-08
+                # contra hardware real: STAT devolvió ~40 notificaciones
+                # seguidas del eco+ok rezagado de un STOP anterior).
+                candidate = stripped.upper()
+                if candidate != own_word and candidate in _CLI_COMMAND_WORDS:
+                    foreign_echo = True
+                    foreign_word = candidate
+            if not own_echo_seen:
                 if stripped.upper() == cmd_upper:
                     logger.debug("Eco descartado en %s: %s", self.name, line)
+                    own_echo_seen = True
                     continue
                 after_cmd = (
                     stripped[len(cmd_upper) :] if stripped.upper().startswith(cmd_upper) else None
@@ -230,17 +339,34 @@ class DwmCliClient:
                 if after_cmd is not None and (after_cmd == "" or after_cmd[0].isspace()):
                     remainder = after_cmd.lstrip()
                     logger.debug("Eco pegado a la respuesta en %s: %s", self.name, line)
+                    own_echo_seen = True
                     if not remainder:
                         continue
                     stripped = remainder
                     line = remainder
-            else:
-                received_any = True
             lines.append(line)
             # "ok" y "KO" son los marcadores de fin de respuesta del firmware
             # (éxito y error respectivamente; el KO se observó en fw 1.1.0).
             if stripped.lower() in ("ok", "ko"):
-                break
+                if own_echo_seen or not foreign_echo:
+                    break
+                # El bloque contiene, en alguna línea, el eco de OTRO comando
+                # de la CLI (ver nota arriba): es la respuesta rezagada de ese
+                # comando — se descarta y se sigue esperando la respuesta real,
+                # sin exceder el timeout.
+                logger.warning(
+                    "%s: se descartó una respuesta ajena a %r (eco de %r, backlog rezagado): %r",
+                    self.name,
+                    cmd,
+                    foreign_word,
+                    lines,
+                )
+                lines = []
+                received_any = False
+                foreign_echo = False
+                foreign_word = ""
+                first_line_pending = True
+                notification_backlog = False
         return lines
 
     # ----------------------------------------------------------- estado y modo
