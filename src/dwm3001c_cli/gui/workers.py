@@ -7,7 +7,10 @@ de progreso continuas. Ninguno importa Qt widgets — solo ``QtCore``.
 from __future__ import annotations
 
 import logging
+import statistics
+import threading
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
@@ -18,7 +21,7 @@ from dwm3001c_cli.calibration.autocal import (
     CalibrationReport,
     autocalibrate,
 )
-from dwm3001c_cli.calibration.sampler import SessionParams, collect_samples
+from dwm3001c_cli.calibration.sampler import SessionParams, cleanup_both, collect_samples
 from dwm3001c_cli.core.client import DwmCliClient
 from dwm3001c_cli.core.models import Measurement, RangingStats, ValidationResult
 from dwm3001c_cli.transport.discovery import BoardPort, find_boards
@@ -32,6 +35,7 @@ if TYPE_CHECKING:
     # el extra [ble] (bleak) no es una dependencia dura de la GUI, solo del
     # escaneo/conexión BLE. Acá solo hace falta para el chequeo de tipos.
     from dwm3001c_cli.transport.ble_discovery import BleBoardInfo
+    from dwm3001c_cli.transport.ble_link import BleTransport
 
 
 class ScanWorker(QObject):
@@ -91,6 +95,44 @@ class ConnectWorker(QObject):
             self.failed.emit(str(exc))
             return
         self.connected.emit(transport, client)
+
+
+class CallableWorker(QObject):
+    """Corre una función bloqueante arbitraria sin bloquear el hilo de UI.
+
+    Genérico a propósito (no sabe nada de BLE): lo usa
+    ``ConnectionView`` para leer batería/firmware del puente bajo demanda
+    (ver ``_fetch_ble_device_status`` ahí), fuera del momento de conectar.
+
+    [Mitigación 2026-09-09, hardware real] La lectura de batería/firmware
+    era automática apenas se conectaba cada nodo — confirmado contra
+    hardware real (volcado nativo analizado con WinDbg, exit code real
+    ``0xC0000409``/``STATUS_STACK_BUFFER_OVERRUN`` visible en el log de
+    ProcDump) que eso aumentaba la frecuencia del crash ya documentado en
+    ``docs/rama-hardware-ble.md`` §8 (condición de carrera Qt/WinRT): dos
+    conexiones BLE por hilos de ``ConnectWorker`` separados podían terminar
+    haciendo llamadas WinRT nativas superpuestas si el usuario conectaba el
+    segundo nodo mientras el primero todavía estaba leyendo esas
+    características. Pasarla a una acción manual (botón), disparada por el
+    usuario un nodo a la vez, saca esa superposición concreta — no elimina
+    el bug de fondo (río arriba, en PySide6/WinRT).
+    """
+
+    finished = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, factory: Callable[[], object]) -> None:
+        super().__init__()
+        self._factory = factory
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            result = self._factory()
+        except Exception as exc:  # nunca dejar escapar una excepción del worker
+            self.failed.emit(str(exc))
+            return
+        self.finished.emit(result)
 
 
 class TerminalWorker(QObject):
@@ -244,16 +286,47 @@ _BLE_MIN_SAMPLES = 30
 _BLE_TIMEOUT_MULTIPLIER = 5
 
 
+@dataclass(frozen=True)
+class BleDeviceStatus:
+    """Estado adicional de un nodo BLE recién conectado — informativo, no
+    crítico para la calibración (ver ``BleTransport.read_battery_level``/
+    ``read_bridge_firmware_version``, best-effort, pueden ser ``None``).
+    """
+
+    role: str  # "initiator" o "responder"
+    name: str
+    address: str
+    battery_pct: int | None
+    firmware_version: str | None
+
+
+def format_ble_device_status(battery_pct: int | None, firmware_version: str | None) -> str:
+    """Texto corto para mostrar batería/firmware de un puente BLE en la UI.
+
+    Compartido por ``ConnectionView`` y ``BleCalibrationView`` para que el
+    mismo dato se vea igual en las dos pestañas. Ninguno de los dos campos es
+    obligatorio (lecturas best-effort, ver ``BleTransport``).
+    """
+    parts = []
+    if battery_pct is not None:
+        parts.append(f"batería {battery_pct}%")
+    if firmware_version is not None:
+        parts.append(f"fw puente {firmware_version}")
+    return ", ".join(parts) if parts else "sin datos de batería/firmware"
+
+
 class BlePairCalibrationWorker(QObject):
     """Calibración con **ambas placas por Bluetooth** (puentes nRF52840).
 
     Abre los dos ``BleTransport``, corre ``autocalibrate`` con
     :func:`_ble_sampler` y cierra ambos transportes siempre, incluso ante
     error. Emite por señal cada medición recibida (para mostrar la distancia
-    en vivo) y cada iteración completada.
+    en vivo), cada iteración completada, y el estado (batería/firmware) de
+    cada nodo apenas se conecta.
     """
 
     stage = Signal(str)  # texto de etapa para el banner de estado
+    device_status = Signal(object)  # BleDeviceStatus
     measurement_received = Signal(object)  # Measurement
     iteration_completed = Signal(object)  # CalibrationIteration
     finished = Signal(object)  # CalibrationReport
@@ -322,6 +395,18 @@ class BlePairCalibrationWorker(QObject):
                 quiet_period_s=self._QUIET_PERIOD_S,
                 command_timeout_s=self._COMMAND_TIMEOUT_S,
             )
+            # [Mitigación 2026-09-09, hardware real] Las lecturas de batería/firmware
+            # se hacen recién acá, con ambas conexiones GATT ya completas y estables,
+            # y una después de la otra (nunca en paralelo). Hacerlas apenas se abre
+            # cada transporte —como antes— generaba actividad WinRT nativa concurrente
+            # en los dos hilos de BleTransport justo durante la ventana de conexión,
+            # lo que aumentaba la frecuencia del crash nativo documentado en
+            # docs/rama-hardware-ble.md §8 (STATUS_STACK_BUFFER_OVERRUN /
+            # 0xC0000409, confirmado con ProcDump contra hardware real). Esto no
+            # elimina la causa raíz (bug de threading Qt-STA/bleak-WinRT-MTA), pero
+            # reduce la superposición temporal que lo dispara.
+            self._emit_device_status("initiator", self._initiator_info, initiator_transport)
+            self._emit_device_status("responder", self._dut_info, dut_transport)
             self.stage.emit(f"Calibrando {self._dut_info.name} contra {self._initiator_info.name}…")
             report = autocalibrate(
                 dut,
@@ -347,6 +432,171 @@ class BlePairCalibrationWorker(QObject):
             return
         assert report is not None
         self.finished.emit(report)
+
+    def _emit_device_status(self, role: str, info: BleBoardInfo, transport: BleTransport) -> None:
+        """Lee batería/firmware del puente (best-effort, ver
+        ``BleTransport.read_battery_level``/``read_bridge_firmware_version``)
+        y emite ``device_status``. Nunca aborta la calibración: si la lectura
+        falla del todo, esos métodos ya devuelven ``None`` en vez de lanzar.
+        """
+        battery_pct = transport.read_battery_level()
+        firmware_version = transport.read_bridge_firmware_version()
+        self.device_status.emit(
+            BleDeviceStatus(
+                role=role,
+                name=info.name,
+                address=info.address,
+                battery_pct=battery_pct,
+                firmware_version=firmware_version,
+            )
+        )
+
+
+class BleMeasureWorker(QObject):
+    """Mide distancia entre dos puentes BLE en forma continua, sin calibrar
+    (no toca ``ant_delay`` ni escribe nada en NVM), hasta que se pide frenar
+    con :meth:`request_stop`.
+
+    Misma base que :class:`BlePairCalibrationWorker` (conexión BLE, arranque
+    de sesión FiRa, cierre de transportes siempre) pero sin el bucle de
+    ajuste de ``autocalibrate``: arranca ``RESPF``/``INITF`` una sola vez y
+    lee mediciones en bloques cortos indefinidamente, para poder reaccionar
+    a un pedido de frenado sin esperar un timeout largo.
+    """
+
+    stage = Signal(str)
+    device_status = Signal(object)  # BleDeviceStatus
+    measurement_received = Signal(object)  # Measurement
+    finished = Signal(object)  # RangingStats | None (None si no hubo ninguna SUCCESS)
+    failed = Signal(str)
+
+    # Ver comentario equivalente en BlePairCalibrationWorker: INITF puede
+    # tardar hasta ~10.4s en completar su respuesta (echo + bloque FiRa + ok)
+    # por competencia con SESSION_INFO_NTF en el mismo canal de comandos
+    # durante la ventana de arranque de la sesión — confirmado con hardware
+    # real, 10.0s no alcanzaba.
+    _QUIET_PERIOD_S = 1.5
+    _COMMAND_TIMEOUT_S = 20.0
+    # Bloque corto de lectura (~3 rondas con el BLOCK_MS=200 default de
+    # SessionParams): lo bastante chico para notar un request_stop() sin
+    # demora perceptible, sin volver el polling tan fino que sature el hilo.
+    _POLL_WINDOW_S = 0.6
+
+    def __init__(self, initiator_info: BleBoardInfo, responder_info: BleBoardInfo) -> None:
+        super().__init__()
+        self._initiator_info = initiator_info
+        self._responder_info = responder_info
+        # threading.Event, no una señal Qt: mientras run() está bloqueado en
+        # su propio bucle, el hilo del worker todavía no llegó a
+        # QThread.exec() (ver start_worker), así que una conexión Qt en cola
+        # hacia un slot de este worker no se entregaría hasta que run()
+        # termine — inútil para frenar el bucle mientras corre. Event.set()
+        # sí es seguro para llamar directamente desde el hilo de UI.
+        self._stop_event = threading.Event()
+
+    def request_stop(self) -> None:
+        """Pide terminar la medición en curso (ver comentario de ``_stop_event``)."""
+        self._stop_event.set()
+
+    @Slot()
+    def run(self) -> None:
+        from dwm3001c_cli.transport.ble_link import BleTransport
+
+        initiator_transport: BleTransport | None = None
+        responder_transport: BleTransport | None = None
+        initiator: DwmCliClient | None = None
+        responder: DwmCliClient | None = None
+        error: Exception | None = None
+        successes: list[int] = []
+        received = 0
+        try:
+            self.stage.emit(
+                f"Conectando a {self._initiator_info.name} "
+                f"({self._initiator_info.address}) — rol INITIATOR…"
+            )
+            initiator_transport = BleTransport(self._initiator_info.address)
+            initiator_transport.open()
+            initiator = DwmCliClient(
+                initiator_transport,
+                quiet_period_s=self._QUIET_PERIOD_S,
+                command_timeout_s=self._COMMAND_TIMEOUT_S,
+            )
+            self.stage.emit(
+                f"Conectando a {self._responder_info.name} "
+                f"({self._responder_info.address}) — rol RESPONDER…"
+            )
+            responder_transport = BleTransport(self._responder_info.address)
+            responder_transport.open()
+            responder = DwmCliClient(
+                responder_transport,
+                quiet_period_s=self._QUIET_PERIOD_S,
+                command_timeout_s=self._COMMAND_TIMEOUT_S,
+            )
+            # [Mitigación 2026-09-09] Ver comentario equivalente en
+            # BlePairCalibrationWorker.run(): las dos lecturas de
+            # batería/firmware van juntas, recién con ambas conexiones
+            # BLE estables, para no aumentar la frecuencia del crash
+            # nativo documentado en docs/rama-hardware-ble.md §8.
+            self._emit_device_status("initiator", self._initiator_info, initiator_transport)
+            self._emit_device_status("responder", self._responder_info, responder_transport)
+
+            self.stage.emit('Midiendo… ("Frenar medición" para terminar)')
+            params = SessionParams()
+            responder.ensure_mode_none()
+            initiator.ensure_mode_none()
+            responder.start_respf(**params.responder_kwargs())
+            initiator.start_initf(**params.initiator_kwargs())
+
+            while not self._stop_event.is_set():
+                for measurement in initiator.read_notifications(
+                    duration_s=self._POLL_WINDOW_S, max_count=1
+                ):
+                    received += 1
+                    self.measurement_received.emit(measurement)
+                    if measurement.status == "SUCCESS" and measurement.distance_cm is not None:
+                        successes.append(measurement.distance_cm)
+        except Exception as exc:  # nunca dejar escapar una excepción del worker
+            error = exc
+        finally:
+            if initiator is not None and responder is not None:
+                cleanup_both(initiator, responder)
+            for transport in (responder_transport, initiator_transport):
+                if transport is None:
+                    continue
+                try:
+                    transport.close()
+                except Exception:
+                    logger.warning("Error cerrando un transporte BLE al terminar", exc_info=True)
+        if error is not None:
+            self.failed.emit(str(error))
+            return
+        stats: RangingStats | None = None
+        if successes:
+            stats = RangingStats(
+                n_requested=received,
+                n_received=received,
+                n_success=len(successes),
+                mean_cm=statistics.fmean(successes),
+                std_cm=statistics.pstdev(successes),
+                min_cm=min(successes),
+                max_cm=max(successes),
+            )
+        self.finished.emit(stats)
+
+    def _emit_device_status(self, role: str, info: BleBoardInfo, transport: BleTransport) -> None:
+        """Ver ``BlePairCalibrationWorker._emit_device_status`` (misma lógica,
+        duplicada para no acoplar los dos workers entre sí)."""
+        battery_pct = transport.read_battery_level()
+        firmware_version = transport.read_bridge_firmware_version()
+        self.device_status.emit(
+            BleDeviceStatus(
+                role=role,
+                name=info.name,
+                address=info.address,
+                battery_pct=battery_pct,
+                firmware_version=firmware_version,
+            )
+        )
 
 
 class CalibrationWorker(QObject):
@@ -412,14 +662,18 @@ def start_worker(worker: _RunnableWorker) -> QThread:
 
 
 __all__ = [
+    "BleDeviceStatus",
+    "BleMeasureWorker",
     "BlePairCalibrationWorker",
     "BleScanWorker",
     "BoardPort",
     "CalibrationIteration",
     "CalibrationWorker",
+    "CallableWorker",
     "ConnectWorker",
     "ScanWorker",
     "TerminalWorker",
     "ValidationWorker",
+    "format_ble_device_status",
     "start_worker",
 ]

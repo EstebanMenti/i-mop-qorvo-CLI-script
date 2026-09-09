@@ -9,12 +9,16 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
+import types
 from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtWidgets import QApplication
 
 from dwm3001c_cli.gui.main_window import MainWindow
+
+logger = logging.getLogger(__name__)
 
 
 def _configure_logging(log_dir: Path = Path("logs")) -> None:
@@ -25,6 +29,52 @@ def _configure_logging(log_dir: Path = Path("logs")) -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         handlers=[logging.FileHandler(log_file, encoding="utf-8"), logging.StreamHandler()],
     )
+
+
+def _install_crash_logging() -> None:
+    """Loguea cualquier excepción no atrapada antes de que termine el proceso.
+
+    [Investigación 2026-09-09, hardware real] La app se cerraba sola, sin
+    ninguna traza — ni excepción de Python, ni volcado nativo capturable con
+    ProcDump con monitoreo de excepciones activado (se confirmó contra
+    hardware real, volcado real analizado con WinDbg: el proceso hacía un
+    ``Py_Exit``/``ExitProcess`` limpio, un solo hilo restante, **sin ningún
+    fallo de hardware ni excepción SEH involucrados** — descarta la teoría
+    previa de un crash nativo WinRT tipo ``STATUS_STACK_BUFFER_OVERRUN``,
+    que si deja ese tipo de rastro y no dejó ninguno acá). La hipótesis de
+    que fuera una excepción de Python escapando de un slot Qt normal
+    (conectado a una señal cross-thread) se probó de forma aislada y **no
+    se confirmó**: en esta versión de PySide6, ese caso imprime el
+    traceback y el proceso sigue vivo. La causa raíz puntual sigue sin
+    confirmarse, pero el patrón (cierre limpio del intérprete, sin
+    excepción SEH) es consistente con algún tipo de terminación disparada
+    desde código Python, no con un fallo de hardware — instalar
+    ``sys.excepthook``/``threading.excepthook`` no elimina la causa, pero
+    convierte una futura muerte silenciosa en un traceback real en el log
+    en vez de tener que reconstruir todo por volcado nativo de nuevo.
+    """
+
+    def log_and_reraise_default(
+        exc_type: type[BaseException],
+        exc_value: BaseException,
+        exc_tb: types.TracebackType | None,
+    ) -> None:
+        logger.critical(
+            "Excepción no atrapada (hilo principal)", exc_info=(exc_type, exc_value, exc_tb)
+        )
+        sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+    def log_thread_exception(args: threading.ExceptHookArgs) -> None:
+        if args.exc_value is None:
+            return
+        logger.critical(
+            "Excepción no atrapada en hilo %r",
+            args.thread,
+            exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+        )
+
+    sys.excepthook = log_and_reraise_default
+    threading.excepthook = log_thread_exception
 
 
 def _allow_bleak_sta() -> None:
@@ -52,6 +102,7 @@ def _allow_bleak_sta() -> None:
 def main_gui() -> None:
     """Punto de entrada del script ``dwm-gui`` (ver ``pyproject.toml``)."""
     _configure_logging()
+    _install_crash_logging()
     _allow_bleak_sta()
     app = QApplication(sys.argv)
     window = MainWindow()

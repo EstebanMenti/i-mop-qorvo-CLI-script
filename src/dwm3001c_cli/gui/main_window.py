@@ -1,5 +1,14 @@
-"""Ventana principal: pestañas Conexión / Terminal / Validar / Calibrar /
-Calibración BLE."""
+"""Ventana principal: pestañas Calibración BLE / Medir.
+
+[2026-09-09, pedido explícito del usuario] Esta rama (``hardware/ble-bridge-
+nrf52840``) usa la GUI solo para el flujo BLE con los puentes nRF52840 — las
+pestañas USB (Conexión/Terminal/Validar/Calibrar) generaban confusión al
+convivir con las BLE. Se sacaron de acá, pero sus vistas (``connection_view``,
+``terminal_view``, ``validation_view``, ``calibration_view``) y sus tests
+siguen intactos: esta rama se sincroniza periódicamente trayendo cambios de
+``main`` (ver ``docs/rama-hardware-ble.md``), que sí las usa, y borrar el
+código directamente generaría conflictos raros en el próximo merge.
+"""
 
 from __future__ import annotations
 
@@ -8,78 +17,46 @@ import logging
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QMainWindow, QTabWidget
 
-from dwm3001c_cli.core.client import DwmCliClient
-from dwm3001c_cli.core.errors import Dwm3001cError
 from dwm3001c_cli.gui.views.ble_calibration_view import BleCalibrationView
-from dwm3001c_cli.gui.views.calibration_view import CalibrationView
-from dwm3001c_cli.gui.views.connection_view import ConnectionView
-from dwm3001c_cli.gui.views.terminal_view import TerminalView
-from dwm3001c_cli.gui.views.validation_view import ValidationView
-from dwm3001c_cli.transport.serial_link import Transport
+from dwm3001c_cli.gui.views.measure_view import MeasureView
 
 logger = logging.getLogger(__name__)
 
 
 class MainWindow(QMainWindow):
-    """Cablea la vista de conexión con el resto (terminal/validar/calibrar) y
-    es la única dueña del ciclo de vida de los transportes conectados — las
-    vistas hijas nunca reciben ``closeEvent`` por sí mismas (viven dentro de
-    un ``QTabWidget``, no son ventanas de nivel superior).
+    """Ventana de nivel superior: solo las dos pestañas BLE (ver docstring del
+    módulo). Cada vista es autónoma — abre y cierra sus propios transportes
+    BLE dentro de su worker (que los cierra siempre, incluso ante error) — así
+    que esta ventana no es dueña de ningún transporte.
     """
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("dwm3001c-cli — Panel de control")
+        self.setWindowTitle("dwm3001c-cli — Panel de control BLE")
         self.resize(900, 700)
 
-        self._initiator_transport: Transport | None = None
-        self._responder_transport: Transport | None = None
-
-        self._connection_view = ConnectionView()
-        self._terminal_view = TerminalView()
-        self._validation_view = ValidationView()
-        self._calibration_view = CalibrationView()
         self._ble_calibration_view = BleCalibrationView()
-
-        self._connection_view.initiator_connected.connect(self._on_initiator_connected)
-        self._connection_view.responder_connected.connect(self._on_responder_connected)
+        self._measure_view = MeasureView()
 
         tabs = QTabWidget()
-        tabs.addTab(self._connection_view, "Conexión")
-        tabs.addTab(self._terminal_view, "Terminal")
-        tabs.addTab(self._validation_view, "Validar")
-        tabs.addTab(self._calibration_view, "Calibrar")
         tabs.addTab(self._ble_calibration_view, "Calibración BLE")
+        tabs.addTab(self._measure_view, "Medir")
         self.setCentralWidget(tabs)
 
-    def _on_initiator_connected(self, transport: Transport, client: DwmCliClient) -> None:
-        self._initiator_transport = transport
-        self._terminal_view.set_initiator(transport)
-        self._validation_view.set_initiator(client)
-        self._calibration_view.set_initiator(client)
-
-    def _on_responder_connected(self, transport: Transport, client: DwmCliClient) -> None:
-        self._responder_transport = transport
-        self._terminal_view.set_responder(transport)
-        self._validation_view.set_responder(client)
-        self._calibration_view.set_responder(client)
-
     def closeEvent(self, event: QCloseEvent) -> None:
+        # Los workers cierran sus propios transportes BLE al terminar
+        # (finally); si el usuario cierra la ventana a mitad de una
+        # calibración/medición, se le avisa en el log: la ventana se cierra
+        # igual y el QThread muere con el proceso, sin dejar transportes
+        # colgados.
         if self._ble_calibration_view.is_running:
-            # El worker cierra sus propios transportes BLE al terminar (finally);
-            # si el usuario cierra la ventana a mitad de una calibración, se le
-            # avisa en el log: la ventana se cierra igual y el QThread muere con
-            # el proceso, sin dejar transportes colgados.
             logger.warning(
                 "Cierre con una calibración BLE en curso: los transportes se "
                 "cerrarán al terminar el worker."
             )
-        self._terminal_view.stop()
-        for transport in (self._initiator_transport, self._responder_transport):
-            if transport is None:
-                continue
-            try:
-                transport.close()
-            except Dwm3001cError:
-                logger.exception("Error cerrando un transporte al salir")
+        if self._measure_view.is_running:
+            logger.warning(
+                "Cierre con una medición BLE en curso: los transportes se "
+                "cerrarán al terminar el worker."
+            )
         super().closeEvent(event)

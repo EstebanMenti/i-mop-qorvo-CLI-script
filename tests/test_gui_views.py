@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QMessageBox, QTabWidget
 
 import dwm3001c_cli.core.client as client_module
 import dwm3001c_cli.gui.views.connection_view as connection_view_module
@@ -22,6 +22,7 @@ from dwm3001c_cli.gui.models import ValidationResultsModel
 from dwm3001c_cli.gui.views.ble_calibration_view import BleCalibrationView
 from dwm3001c_cli.gui.views.calibration_view import CalibrationView
 from dwm3001c_cli.gui.views.connection_view import ConnectionView
+from dwm3001c_cli.gui.views.measure_view import MeasureView
 from dwm3001c_cli.gui.views.terminal_view import TerminalView
 from dwm3001c_cli.gui.views.validation_view import ValidationView
 from dwm3001c_cli.transport.ble_discovery import BleBoardInfo
@@ -58,6 +59,23 @@ class FakeLink(FakeTransport):
     @property
     def name(self) -> str:
         return self._port_name
+
+
+class _StubBleDeviceInfo:
+    """Doble mínimo para ``_fetch_ble_device_status``: expone solo los dos
+    métodos de lectura best-effort, sin necesitar un ``BleTransport`` real
+    (que requeriría hardware BLE para conectar).
+    """
+
+    def __init__(self, *, battery_pct: int | None, firmware_version: str | None) -> None:
+        self._battery_pct = battery_pct
+        self._firmware_version = firmware_version
+
+    def read_battery_level(self) -> int | None:
+        return self._battery_pct
+
+    def read_bridge_firmware_version(self) -> str | None:
+        return self._firmware_version
 
     def __enter__(self) -> FakeLink:
         self.open()
@@ -159,6 +177,22 @@ class TestValidationResultsModel:
         assert model.data(model.index(2, 2), Qt.ItemDataRole.ForegroundRole) == QColor("#6b7280")
 
 
+class TestFormatBleDeviceStatus:
+    def test_both_present(self) -> None:
+        text = workers_module.format_ble_device_status(87, "1.4.2")
+        assert text == "batería 87%, fw puente 1.4.2"
+
+    def test_only_battery(self) -> None:
+        assert workers_module.format_ble_device_status(50, None) == "batería 50%"
+
+    def test_only_firmware(self) -> None:
+        assert workers_module.format_ble_device_status(None, "1.0") == "fw puente 1.0"
+
+    def test_neither_present(self) -> None:
+        text = workers_module.format_ble_device_status(None, None)
+        assert text == "sin datos de batería/firmware"
+
+
 class TestConnectionView:
     def test_scan_populates_usb_combo(self, qtbot, monkeypatch: pytest.MonkeyPatch) -> None:
         view = ConnectionView()
@@ -248,30 +282,73 @@ class TestConnectionView:
         assert view._responder_status.text() == "Conectado: BLE-FD7A9057CC9F"
         qtbot.waitUntil(lambda: len(view._active) == 0, timeout=2000)
 
+    def test_fetch_ble_device_status_reads_battery_and_firmware(self) -> None:
+        transport = _StubBleDeviceInfo(battery_pct=87, firmware_version="1.4.2")
+
+        battery, firmware = connection_view_module._fetch_ble_device_status(transport)
+
+        assert battery == 87
+        assert firmware == "1.4.2"
+
+    def test_fetch_ble_device_status_propagates_none_when_unavailable(self) -> None:
+        transport = _StubBleDeviceInfo(battery_pct=None, firmware_version=None)
+
+        battery, firmware = connection_view_module._fetch_ble_device_status(transport)
+
+        assert battery is None
+        assert firmware is None
+
+    def test_info_button_hidden_until_ble_connected(self, qtbot) -> None:
+        view = ConnectionView()
+        qtbot.addWidget(view)
+
+        assert view._initiator_info_btn.isHidden()
+        assert view._responder_info_btn.isHidden()
+
+    def test_fetch_initiator_info_updates_label_on_demand(self, qtbot) -> None:
+        """[Mitigación 2026-09-09] La lectura de batería/firmware ya no es
+        automática al conectar (ver ``_fetch_ble_device_status``): se dispara
+        a mano con el botón "Ver info", una placa a la vez. Este test cubre
+        ese camino manual sin pasar por ``BleTransport``/hardware real.
+        """
+        view = ConnectionView()
+        qtbot.addWidget(view)
+        view._initiator_transport = _StubBleDeviceInfo(battery_pct=55, firmware_version="2.0.0")
+
+        view._fetch_initiator_info()
+
+        qtbot.waitUntil(lambda: "55%" in view._initiator_device_label.text(), timeout=2000)
+        assert "2.0.0" in view._initiator_device_label.text()
+        qtbot.waitUntil(lambda: len(view._active) == 0, timeout=2000)
+
+    def test_fetch_responder_info_updates_label_on_demand(self, qtbot) -> None:
+        view = ConnectionView()
+        qtbot.addWidget(view)
+        view._responder_transport = _StubBleDeviceInfo(battery_pct=12, firmware_version="1.0.1")
+
+        view._fetch_responder_info()
+
+        qtbot.waitUntil(lambda: "12%" in view._responder_device_label.text(), timeout=2000)
+        assert "1.0.1" in view._responder_device_label.text()
+        qtbot.waitUntil(lambda: len(view._active) == 0, timeout=2000)
+
 
 class TestMainWindowWiring:
-    def test_initiator_connection_enables_other_views(
-        self, qtbot, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_only_ble_tabs_present(self, qtbot) -> None:
+        """[2026-09-09, pedido explícito del usuario] Las pestañas USB
+        (Conexión/Terminal/Validar/Calibrar) se sacaron de esta rama para no
+        confundir con el flujo BLE — ver docstring de ``main_window.py``.
+        """
         window = MainWindow()
         qtbot.addWidget(window)
-        connection_view = window._connection_view
-        connection_view._initiator_port_combo.addItem("COM7")
-        link = FakeLink("COM7", basic_script())
-        monkeypatch.setattr(connection_view_module, "SerialLink", lambda port: link)
 
-        qtbot.mouseClick(connection_view._initiator_connect_btn, _LEFT_BUTTON)
-        qtbot.waitUntil(lambda: window._validation_view._run_btn.isEnabled(), timeout=2000)
+        tabs = window.centralWidget()
+        assert isinstance(tabs, QTabWidget)
+        titles = [tabs.tabText(i) for i in range(tabs.count())]
+        assert titles == ["Calibración BLE", "Medir"]
+        assert tabs.widget(0) is window._ble_calibration_view
+        assert tabs.widget(1) is window._measure_view
 
-        assert window._calibration_view._initiator_client is not None
-        assert window._terminal_view._initiator_transport is link
-
-        # Cierre explícito acá, no solo delegado al teardown automático de
-        # qtbot.addWidget(): con un QThread real de TerminalWorker todavía
-        # vivo, closeEvent() (que lo detiene) corriendo recién en el teardown
-        # de pytest-qt, después de otros tests con hilos propios en la misma
-        # sesión, se volvió intermitente sin este cierre explícito dentro del
-        # cuerpo del test (mismo camino que en uso real).
         window.close()
 
 
@@ -314,6 +391,34 @@ def fake_ble_scan(monkeypatch: pytest.MonkeyPatch, devices: list[BleBoardInfo]) 
 
 
 class TestBleCalibrationView:
+    def test_device_status_updates_correct_label(self, qtbot) -> None:
+        view = BleCalibrationView()
+        qtbot.addWidget(view)
+
+        view._on_device_status(
+            workers_module.BleDeviceStatus(
+                role="initiator",
+                name="uwb-01",
+                address="AA:BB",
+                battery_pct=90,
+                firmware_version="2.0",
+            )
+        )
+        assert "90%" in view._initiator_device_label.text()
+        assert "2.0" in view._initiator_device_label.text()
+        assert view._dut_device_label.text() == "—"  # sin tocar todavía
+
+        view._on_device_status(
+            workers_module.BleDeviceStatus(
+                role="responder",
+                name="uwb-02",
+                address="CC:DD",
+                battery_pct=None,
+                firmware_version=None,
+            )
+        )
+        assert "sin datos" in view._dut_device_label.text()
+
     def test_scan_lists_all_devices_and_filter_narrows(
         self, qtbot, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -364,6 +469,15 @@ class TestBleCalibrationView:
         world = TwrWorld(real_cm=200.0, delay=16375, ideal_delay=16439)
         initiator_transport = SimInitiator(world)
         responder_transport = SimResponder(world)
+        # SimInitiator/SimResponder simulan el protocolo Qorvo genérico (ver
+        # test_calibration.py), no son BleTransport: el worker BLE también
+        # llama a read_battery_level()/read_bridge_firmware_version()
+        # (información complementaria, best-effort) sobre lo que devuelva
+        # BleTransport(address) — acá se agregan como stubs sin datos, igual
+        # que reportaría un puente real sin esos servicios disponibles.
+        for fake_transport in (initiator_transport, responder_transport):
+            fake_transport.read_battery_level = lambda: None
+            fake_transport.read_bridge_firmware_version = lambda: None
         fake_ble_scan(monkeypatch, ble_devices()[:2])
         # El worker abre los BleTransport dentro de run(): se reemplaza la clase
         # por los transportes falsos según la dirección elegida.
@@ -394,3 +508,112 @@ class TestBleCalibrationView:
         assert "delay 16375 ->" in view._log.toPlainText()
         assert not view.is_running
         assert view._run_btn.isEnabled() is True
+
+
+class TestMeasureView:
+    def test_device_status_updates_correct_label(self, qtbot) -> None:
+        view = MeasureView()
+        qtbot.addWidget(view)
+
+        view._on_device_status(
+            workers_module.BleDeviceStatus(
+                role="initiator",
+                name="uwb-01",
+                address="AA:BB",
+                battery_pct=90,
+                firmware_version="2.0",
+            )
+        )
+        assert "90%" in view._initiator_device_label.text()
+        assert "2.0" in view._initiator_device_label.text()
+        assert view._responder_device_label.text() == "—"  # sin tocar todavía
+
+        view._on_device_status(
+            workers_module.BleDeviceStatus(
+                role="responder",
+                name="uwb-02",
+                address="CC:DD",
+                battery_pct=None,
+                firmware_version=None,
+            )
+        )
+        assert "sin datos" in view._responder_device_label.text()
+
+    def test_scan_lists_all_devices_and_filter_narrows(
+        self, qtbot, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        view = MeasureView()
+        qtbot.addWidget(view)
+        fake_ble_scan(monkeypatch, ble_devices())
+
+        assert view._start_btn.isEnabled() is False
+
+        qtbot.mouseClick(view._scan_btn, _LEFT_BUTTON)
+        qtbot.waitUntil(lambda: view._device_list.count() == 3, timeout=2000)
+
+        assert view._initiator_combo.count() == 3
+        assert view._start_btn.isEnabled() is True
+
+        view._filter_edit.setText("uwb")
+        assert view._device_list.count() == 2
+        assert view._initiator_combo.count() == 2
+
+    def test_start_requires_two_distinct_devices(
+        self, qtbot, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        view = MeasureView()
+        qtbot.addWidget(view)
+        fake_ble_scan(monkeypatch, ble_devices())
+
+        qtbot.mouseClick(view._scan_btn, _LEFT_BUTTON)
+        qtbot.waitUntil(lambda: view._initiator_combo.count() == 3, timeout=2000)
+        assert view._start_btn.isEnabled() is True
+
+        view._responder_combo.setCurrentIndex(view._initiator_combo.currentIndex())
+        assert view._start_btn.isEnabled() is False
+        assert "distintos" in view._selection_label.text()
+
+    def test_start_then_stop_reports_live_distance_and_summary(
+        self, qtbot, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Física simulada mínima: acá solo importa que haya mediciones
+        # SUCCESS fluyendo, no el valor de ant_delay (esta vista no calibra).
+        world = TwrWorld(real_cm=200.0, delay=16439, ideal_delay=16439)
+        initiator_transport = SimInitiator(world)
+        responder_transport = SimResponder(world)
+        for fake_transport in (initiator_transport, responder_transport):
+            fake_transport.read_battery_level = lambda: None
+            fake_transport.read_bridge_firmware_version = lambda: None
+        fake_ble_scan(monkeypatch, ble_devices()[:2])
+        monkeypatch.setattr(
+            ble_link_module,
+            "BleTransport",
+            lambda address: initiator_transport if address.endswith("01") else responder_transport,
+        )
+        monkeypatch.setattr(client_module, "_STOP_SETTLE_S", 0.0)
+
+        view = MeasureView()
+        qtbot.addWidget(view)
+        qtbot.mouseClick(view._scan_btn, _LEFT_BUTTON)
+        qtbot.waitUntil(lambda: view._start_btn.isEnabled(), timeout=2000)
+
+        qtbot.mouseClick(view._start_btn, _LEFT_BUTTON)
+        assert view._worker is not None
+        # El fake no simula el ritmo real de notificaciones (~200ms): sin
+        # frenar apenas llega la primera, el bucle de BleMeasureWorker gira
+        # sin límite e inunda la cola de señales Qt con un volumen que nunca
+        # ocurriría con hardware real. DirectConnection ejecuta request_stop()
+        # (solo marca un threading.Event, thread-safe) en el propio hilo del
+        # worker, en el mismo emit() de la primera medición.
+        view._worker.measurement_received.connect(
+            lambda _m: view._worker.request_stop(),  # type: ignore[union-attr]
+            Qt.ConnectionType.DirectConnection,
+        )
+
+        qtbot.waitUntil(lambda: not view.is_running, timeout=5000)
+
+        assert "cm" in view._live_label.text()
+        assert "Medición terminada" in view._status_label.text()
+        assert "Resumen:" in view._log.toPlainText()
+        assert view._start_btn.isEnabled() is True
+        assert not view._stop_btn.isEnabled()

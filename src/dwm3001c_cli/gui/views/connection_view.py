@@ -20,7 +20,14 @@ from PySide6.QtWidgets import (
 )
 
 from dwm3001c_cli.core.client import DwmCliClient
-from dwm3001c_cli.gui.workers import BoardPort, ConnectWorker, ScanWorker, start_worker
+from dwm3001c_cli.gui.workers import (
+    BoardPort,
+    CallableWorker,
+    ConnectWorker,
+    ScanWorker,
+    format_ble_device_status,
+    start_worker,
+)
 from dwm3001c_cli.transport.serial_link import SerialLink, Transport
 
 # [Verificado 2026-08-13, hardware real] Mismo valor que _BLE_QUIET_PERIOD_S
@@ -53,6 +60,23 @@ def _connect_ble(address: str) -> tuple[Transport, DwmCliClient]:
     return link, client
 
 
+def _fetch_ble_device_status(transport: object) -> tuple[int | None, str | None]:
+    """Lee batería y versión de firmware del puente BLE ya conectado.
+
+    [Mitigación 2026-09-09, hardware real] Antes se leía automáticamente
+    apenas se conectaba cada nodo, en ``_connect_ble()`` — sacado de ahí
+    porque, con hardware real, esa lectura en el mismo momento en que el
+    OTRO nodo podía estar terminando de conectar (dos hilos de
+    ``BleTransport`` distintos, cada uno con su propia actividad WinRT
+    nativa) coincidía con el crash nativo ya documentado en
+    ``docs/rama-hardware-ble.md`` §8 (confirmado con un volcado real,
+    ``STATUS_STACK_BUFFER_OVERRUN``/``0xC0000409``) y lo hacía mucho más
+    frecuente. Ahora es una acción manual (botón "Ver info"): el usuario la
+    dispara un nodo a la vez, ya con las conexiones estables.
+    """
+    return transport.read_battery_level(), transport.read_bridge_firmware_version()  # type: ignore[attr-defined]
+
+
 class ConnectionView(QWidget):
     """Escanea y conecta las placas INITIATOR/RESPONDER; expone los clientes ya listos."""
 
@@ -61,10 +85,16 @@ class ConnectionView(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
-        # No guarda los transportes conectados: los emite por señal y el
-        # dueño del ciclo de vida (MainWindow, ventana de nivel superior) es
-        # responsable de cerrarlos — este widget vive dentro de un QTabWidget
-        # y nunca recibe closeEvent por sí mismo.
+        # No es dueño del ciclo de vida de los transportes conectados: los
+        # emite por señal y el dueño real (MainWindow, ventana de nivel
+        # superior) es responsable de cerrarlos — este widget vive dentro de
+        # un QTabWidget y nunca recibe closeEvent por sí mismo. Sí guarda una
+        # referencia de solo lectura por rol, para que el botón "Ver info"
+        # (batería/firmware, ver _fetch_ble_device_status) tenga sobre qué
+        # transporte operar sin depender de que el resto de la GUI se la
+        # pase de vuelta.
+        self._initiator_transport: Transport | None = None
+        self._responder_transport: Transport | None = None
         self._active: list[tuple[QThread, object]] = []  # mantiene vivos threads+workers en curso
 
         layout = QVBoxLayout(self)
@@ -108,6 +138,16 @@ class ConnectionView(QWidget):
         row.addWidget(self._initiator_connect_btn)
         row.addWidget(self._initiator_status)
         outer.addLayout(row)
+
+        info_row = QHBoxLayout()
+        self._initiator_info_btn = QPushButton("Ver info (batería/firmware)")
+        self._initiator_info_btn.clicked.connect(self._fetch_initiator_info)
+        self._initiator_info_btn.hide()
+        self._initiator_device_label = QLabel("")
+        self._initiator_device_label.setStyleSheet("color: #495057; font-style: italic;")
+        info_row.addWidget(self._initiator_info_btn)
+        info_row.addWidget(self._initiator_device_label, 1)
+        outer.addLayout(info_row)
         return box
 
     def _on_initiator_mode_toggled(self) -> None:
@@ -142,6 +182,16 @@ class ConnectionView(QWidget):
         row.addWidget(self._responder_connect_btn)
         row.addWidget(self._responder_status)
         outer.addLayout(row)
+
+        info_row = QHBoxLayout()
+        self._responder_info_btn = QPushButton("Ver info (batería/firmware)")
+        self._responder_info_btn.clicked.connect(self._fetch_responder_info)
+        self._responder_info_btn.hide()
+        self._responder_device_label = QLabel("")
+        self._responder_device_label.setStyleSheet("color: #495057; font-style: italic;")
+        info_row.addWidget(self._responder_info_btn)
+        info_row.addWidget(self._responder_device_label, 1)
+        outer.addLayout(info_row)
         return box
 
     def _on_responder_mode_toggled(self) -> None:
@@ -203,6 +253,8 @@ class ConnectionView(QWidget):
 
         self._initiator_connect_btn.setEnabled(False)
         self._initiator_status.setText("Conectando...")
+        self._initiator_info_btn.hide()
+        self._initiator_device_label.setText("")
         thread = start_worker(worker)
         worker.connected.connect(self._on_initiator_connected)
         worker.failed.connect(self._on_initiator_connect_failed)
@@ -212,13 +264,41 @@ class ConnectionView(QWidget):
         thread.start()
 
     def _on_initiator_connected(self, transport: Transport, client: DwmCliClient) -> None:
+        from dwm3001c_cli.transport.ble_link import BleTransport
+
         self._initiator_connect_btn.setEnabled(True)
         self._initiator_status.setText(f"Conectado: {client.name}")
+        self._initiator_transport = transport
+        self._initiator_info_btn.setVisible(isinstance(transport, BleTransport))
         self.initiator_connected.emit(transport, client)
 
     def _on_initiator_connect_failed(self, message: str) -> None:
         self._initiator_connect_btn.setEnabled(True)
         self._initiator_status.setText(f"Error: {message}")
+
+    def _fetch_initiator_info(self) -> None:
+        transport = self._initiator_transport
+        if transport is None:
+            return
+        self._initiator_info_btn.setEnabled(False)
+        self._initiator_device_label.setText("Consultando…")
+        worker = CallableWorker(lambda: _fetch_ble_device_status(transport))
+        thread = start_worker(worker)
+        worker.finished.connect(self._on_initiator_info_result)
+        worker.failed.connect(self._on_initiator_info_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        self._keep_alive(thread, worker)
+        thread.start()
+
+    def _on_initiator_info_result(self, result: tuple[int | None, str | None]) -> None:
+        self._initiator_info_btn.setEnabled(True)
+        battery, firmware = result
+        self._initiator_device_label.setText(format_ble_device_status(battery, firmware))
+
+    def _on_initiator_info_failed(self, message: str) -> None:
+        self._initiator_info_btn.setEnabled(True)
+        self._initiator_device_label.setText(f"No se pudo consultar: {message}")
 
     # -------------------------------------------------------- RESPONDER
 
@@ -238,6 +318,8 @@ class ConnectionView(QWidget):
 
         self._responder_connect_btn.setEnabled(False)
         self._responder_status.setText("Conectando...")
+        self._responder_info_btn.hide()
+        self._responder_device_label.setText("")
         thread = start_worker(worker)
         worker.connected.connect(self._on_responder_connected)
         worker.failed.connect(self._on_responder_connect_failed)
@@ -247,13 +329,41 @@ class ConnectionView(QWidget):
         thread.start()
 
     def _on_responder_connected(self, transport: Transport, client: DwmCliClient) -> None:
+        from dwm3001c_cli.transport.ble_link import BleTransport
+
         self._responder_connect_btn.setEnabled(True)
         self._responder_status.setText(f"Conectado: {client.name}")
+        self._responder_transport = transport
+        self._responder_info_btn.setVisible(isinstance(transport, BleTransport))
         self.responder_connected.emit(transport, client)
 
     def _on_responder_connect_failed(self, message: str) -> None:
         self._responder_connect_btn.setEnabled(True)
         self._responder_status.setText(f"Error: {message}")
+
+    def _fetch_responder_info(self) -> None:
+        transport = self._responder_transport
+        if transport is None:
+            return
+        self._responder_info_btn.setEnabled(False)
+        self._responder_device_label.setText("Consultando…")
+        worker = CallableWorker(lambda: _fetch_ble_device_status(transport))
+        thread = start_worker(worker)
+        worker.finished.connect(self._on_responder_info_result)
+        worker.failed.connect(self._on_responder_info_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        self._keep_alive(thread, worker)
+        thread.start()
+
+    def _on_responder_info_result(self, result: tuple[int | None, str | None]) -> None:
+        self._responder_info_btn.setEnabled(True)
+        battery, firmware = result
+        self._responder_device_label.setText(format_ble_device_status(battery, firmware))
+
+    def _on_responder_info_failed(self, message: str) -> None:
+        self._responder_info_btn.setEnabled(True)
+        self._responder_device_label.setText(f"No se pudo consultar: {message}")
 
     # ---------------------------------------------------------------- utils
 
