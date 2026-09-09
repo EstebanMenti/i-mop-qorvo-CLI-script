@@ -147,6 +147,35 @@ class SimResponder(FakeTransport):
                 self._pending.extend(["", f"Please enter a valid key: {parts[1]}", "KO"])
 
 
+class FlakyCleanupInitiator(FakeTransport):
+    """Initiator cuyo *segundo* ``STAT`` (el de la limpieza final, tras la
+    sesión) devuelve un bloque corrupto sin JSON — reproduce el hallazgo real
+    (hardware, 2026-09-08, UWB-Node-6/-8): un ``STAT`` corrupto en el
+    initiator no debe impedir que se intente la limpieza del responder."""
+
+    def __init__(self, world: TwrWorld) -> None:
+        super().__init__()
+        self.world = world
+        self._stat_calls = 0
+
+    def write_line(self, line: str) -> None:
+        self.sent.append(line)
+        upper = line.upper()
+        if upper.startswith("INITF") or upper == "STOP":
+            self._pending.append("ok")
+        elif upper == "STAT":
+            self._stat_calls += 1
+            if self._stat_calls > 1:
+                self._pending.extend(["basura corrupta sin bloque JS", "ok"])
+            else:
+                self._pending.extend(js_stat_none())
+        elif upper == "THREAD":
+            self.world.sequence += 1
+            one_line = measurement_line(self.world.sequence, "SUCCESS", self.world.reported_cm())
+            self._pending.extend(split_notification(one_line))
+            self._pending.append("ok")
+
+
 def make_pair(
     world: TwrWorld,
     *,
@@ -216,6 +245,20 @@ class TestCollectSamplesPolled:
         )
 
         assert seen.count("SUCCESS") == 10
+
+    def test_cleans_up_responder_even_if_initiator_cleanup_fails(self) -> None:
+        world = TwrWorld(real_cm=200.0, delay=16439, ideal_delay=16439)
+        initiator_t = FlakyCleanupInitiator(world)
+        responder_t = SimResponder(world)
+        initiator = DwmCliClient(initiator_t, command_timeout_s=0.2, quiet_period_s=0.05)
+        responder = DwmCliClient(responder_t, command_timeout_s=0.2, quiet_period_s=0.05)
+
+        with pytest.raises(ValueError, match="JSxxxx"):
+            collect_samples_polled(initiator, responder, n_samples=1)
+
+        # Pese a que ensure_mode_none() del initiator explotó en la limpieza,
+        # el responder igual recibió su STOP — antes quedaba corriendo RESPF.
+        assert "STOP" in responder_t.sent
 
     def test_bad_link_raises_before_calibrating(self) -> None:
         world = TwrWorld(real_cm=200.0, delay=16375, ideal_delay=16439, fail_all=True)

@@ -28,7 +28,7 @@ import logging
 import time
 from collections.abc import Callable, Iterable
 
-from dwm3001c_cli.calibration.sampler import SessionParams, build_stats_or_fail
+from dwm3001c_cli.calibration.sampler import SessionParams, build_stats_or_fail, cleanup_both
 from dwm3001c_cli.core.client import DwmCliClient
 from dwm3001c_cli.core.errors import CalibrationError, CommandTimeoutError
 from dwm3001c_cli.core.models import Measurement, RangingStats
@@ -169,9 +169,23 @@ def collect_samples_polled(
                 # Sin notificaciones acumuladas: esperar a que el ranging genere
                 # rondas nuevas (una por BLOCK ms) antes del próximo poll.
                 time.sleep(poll_interval_s)
-    finally:
-        initiator.ensure_mode_none()
-        responder.ensure_mode_none()
+    except BaseException:
+        cleanup_both(initiator, responder)
+        raise
+    else:
+        cleanup_errors = cleanup_both(initiator, responder)
+        if cleanup_errors:
+            # [Bug real, 2026-09-08, hardware real] Antes, un fallo al volver
+            # a NONE en el initiator impedía que se intentara siquiera en el
+            # responder (ambas llamadas estaban seguidas en el mismo
+            # ``finally``): un STAT corrupto en el initiator dejaba al
+            # responder trabado en RESPF, generando ranging (y notificaciones)
+            # sin fin — confirmado contra hardware real (UWB-Node-6/-8): la
+            # sesión siguiente arrancó con el responder ya en RESPF y su STAT
+            # llegó con bytes corruptos por el enlace saturado. Ahora se
+            # intentan ambas limpiezas siempre, y solo si no hubo ningún otro
+            # error se propaga la primera falla de limpieza.
+            raise cleanup_errors[0]
 
     if len(successes) < n_samples:
         # [Verificado 2026-09-08, hardware real] Los puentes BLE pueden
